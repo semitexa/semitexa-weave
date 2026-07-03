@@ -180,6 +180,23 @@ final class GraphStore implements GraphStoreInterface
         return ['node' => $this->node($nodeId), 'edges' => $edges, 'neighbors' => $neighbors];
     }
 
+    public function graph(int $limit = 500): array
+    {
+        $limit = max(1, $limit);
+        $nodeRows = $this->nodes()->query()
+            ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
+            ->limit($limit)
+            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        $edgeRows = $this->edges()->query()
+            ->limit($limit * 8)
+            ->fetchAllAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+
+        return [
+            'nodes' => array_map($this->toNode(...), $nodeRows),
+            'edges' => array_map($this->toEdge(...), $edgeRows),
+        ];
+    }
+
     public function removeNode(string $id): void
     {
         foreach (array_merge($this->edgesFrom($id), $this->edgesTo($id)) as $edge) {

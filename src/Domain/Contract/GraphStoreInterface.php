@@ -51,6 +51,15 @@ interface GraphStoreInterface
      */
     public function neighborhood(string $nodeId): array;
 
+    /**
+     * The whole graph (bounded) — nodes most-recently-touched first, plus their
+     * edges — for a visualization to render. Bounded because a force layout
+     * degrades past a few hundred nodes; contextual/ego views use neighborhood().
+     *
+     * @return array{nodes: list<Node>, edges: list<Edge>}
+     */
+    public function graph(int $limit = 500): array;
+
     public function removeNode(string $id): void;
 
     public function removeEdge(string $id): void;
