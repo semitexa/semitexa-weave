@@ -123,6 +123,31 @@ final class GraphStore implements GraphStoreInterface
         return $this->toEdge($row);
     }
 
+    public function updateNode(string $id, ?string $title = null, array $properties = []): ?Node
+    {
+        $existing = $this->nodes()->query()
+            ->where(NodeResource::column('id'), Operator::Equals, $id)
+            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        if (!$existing instanceof NodeResource) {
+            return null;
+        }
+
+        $newTitle = ($title !== null && trim($title) !== '') ? trim($title) : $existing->title;
+        $row = new NodeResource(
+            id: $existing->id,
+            kind: $existing->kind,
+            title: $newTitle,
+            title_key: $this->titleKey($newTitle),
+            properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
+            source: $existing->source,
+            created_at: $existing->created_at,
+            updated_at: new \DateTimeImmutable(),
+        );
+        $this->nodes()->update($row);
+
+        return $this->toNode($row);
+    }
+
     public function node(string $id): ?Node
     {
         $row = $this->nodes()->query()

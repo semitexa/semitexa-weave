@@ -29,6 +29,14 @@ interface GraphStoreInterface
      */
     public function addEdge(string $fromId, string $toId, string $relation, int $weight = 100, string $source = ''): Edge;
 
+    /**
+     * Update an existing node by id — rename (recomputes the dedup key) and/or
+     * merge properties. Returns the updated node, or null if the id is unknown.
+     *
+     * @param array<string, mixed> $properties
+     */
+    public function updateNode(string $id, ?string $title = null, array $properties = []): ?Node;
+
     public function node(string $id): ?Node;
 
     /**
