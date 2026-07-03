@@ -22,6 +22,7 @@ enum NodeKind: string
     case Task = 'task';
     case Event = 'event';
     case App = 'app';
+    case Folder = 'folder';
     case File = 'file';
     case Place = 'place';
     case Org = 'org';
