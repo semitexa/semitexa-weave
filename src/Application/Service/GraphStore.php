@@ -205,6 +205,51 @@ final class GraphStore implements GraphStoreInterface
         return ['node' => $this->node($nodeId), 'edges' => $edges, 'neighbors' => $neighbors];
     }
 
+    public function subgraph(string $nodeId, int $depth = 1): array
+    {
+        $depth = max(1, min(3, $depth));
+        $center = $this->node($nodeId);
+        if ($center === null) {
+            return ['nodes' => [], 'edges' => []];
+        }
+
+        /** @var array<string, \Semitexa\Weave\Domain\Model\Node> $nodes */
+        $nodes = [$nodeId => $center];
+        /** @var array<string, \Semitexa\Weave\Domain\Model\Edge> $edges */
+        $edges = [];
+        $frontier = [$nodeId];
+
+        for ($hop = 0; $hop < $depth && $frontier !== []; $hop++) {
+            $next = [];
+            foreach ($frontier as $id) {
+                foreach (array_merge($this->edgesFrom($id), $this->edgesTo($id)) as $edge) {
+                    $edges[$edge->id] = $edge;
+                    $other = $edge->fromId === $id ? $edge->toId : $edge->fromId;
+                    if (!isset($nodes[$other])) {
+                        $neighbor = $this->node($other);
+                        if ($neighbor !== null) {
+                            $nodes[$other] = $neighbor;
+                            $next[] = $other;
+                        }
+                    }
+                }
+            }
+            $frontier = $next;
+        }
+
+        // Rim cross-links: edges between two included nodes that BFS reached
+        // through other paths — without them the local view loses real structure.
+        foreach (array_keys($nodes) as $id) {
+            foreach ($this->edgesFrom($id) as $edge) {
+                if (isset($nodes[$edge->toId])) {
+                    $edges[$edge->id] = $edge;
+                }
+            }
+        }
+
+        return ['nodes' => array_values($nodes), 'edges' => array_values($edges)];
+    }
+
     public function graph(int $limit = 500): array
     {
         $limit = max(1, $limit);

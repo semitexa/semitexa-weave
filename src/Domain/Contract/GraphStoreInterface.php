@@ -60,9 +60,18 @@ interface GraphStoreInterface
     public function neighborhood(string $nodeId): array;
 
     /**
+     * The local view around one node: the node, everything within $depth hops,
+     * and every edge between included nodes (same shape as {@see graph()}).
+     * Unknown node → empty. $depth is clamped to 1..3.
+     *
+     * @return array{nodes: list<Node>, edges: list<Edge>}
+     */
+    public function subgraph(string $nodeId, int $depth = 1): array;
+
+    /**
      * The whole graph (bounded) — nodes most-recently-touched first, plus their
      * edges — for a visualization to render. Bounded because a force layout
-     * degrades past a few hundred nodes; contextual/ego views use neighborhood().
+     * degrades past a few hundred nodes; contextual/ego views use subgraph().
      *
      * @return array{nodes: list<Node>, edges: list<Edge>}
      */
