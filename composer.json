@@ -32,5 +32,10 @@
         "graph",
         "knowledge",
         "pkm"
-    ]
+    ],
+    "autoload-dev": {
+        "psr-4": {
+            "Semitexa\\Weave\\Tests\\": "tests/"
+        }
+    }
 }

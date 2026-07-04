@@ -77,6 +77,12 @@ interface GraphStoreInterface
      */
     public function graph(int $limit = 500): array;
 
+    /**
+     * Merge $dropId into $keepId: edges repointed (collisions and self-loops
+     * dropped), properties merged (kept node wins), duplicate removed.
+     */
+    public function mergeNodes(string $keepId, string $dropId): void;
+
     public function removeNode(string $id): void;
 
     public function removeEdge(string $id): void;

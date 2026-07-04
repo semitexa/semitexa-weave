@@ -18,6 +18,7 @@ use Semitexa\Weave\Domain\Enum\NodeKind;
 use Semitexa\Weave\Domain\Model\Edge;
 use Semitexa\Weave\Domain\Model\Node;
 use Semitexa\Weave\Domain\Model\Relation;
+use Semitexa\Weave\Domain\Model\TitleKey;
 
 /**
  * The Weave graph store — idempotent upsert of typed nodes/edges over the ORM
@@ -65,6 +66,34 @@ final class GraphStore implements GraphStoreInterface
             return $this->toNode($row);
         }
 
+        // Near-duplicate guard: different phrasings of the same thing reduce to
+        // one sorted content-token set ("Semitexa documentation" == "documentation
+        // for Semitexa"). Converge onto the existing node — its (earlier) title
+        // stays canonical, new properties merge in. Bounded same-kind scan; the
+        // graph is a personal world, not a warehouse.
+        $tokenKey = TitleKey::tokenSet($title);
+        $sameKind = $this->nodes()->query()
+            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
+            ->limit(500)
+            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        foreach ($sameKind as $candidate) {
+            if (TitleKey::tokenSet($candidate->title) === $tokenKey) {
+                $merged = new NodeResource(
+                    id: $candidate->id,
+                    kind: $candidate->kind,
+                    title: $candidate->title,
+                    title_key: $candidate->title_key,
+                    properties_json: $this->encode(array_merge($this->decode($candidate->properties_json), $properties)),
+                    source: $candidate->source !== '' ? $candidate->source : $source,
+                    created_at: $candidate->created_at,
+                    updated_at: $now,
+                );
+                $this->nodes()->update($merged);
+
+                return $this->toNode($merged);
+            }
+        }
+
         $row = new NodeResource(
             id: Uuid7::generate(),
             kind: $kind->value,
@@ -78,6 +107,56 @@ final class GraphStore implements GraphStoreInterface
         $this->nodes()->insert($row);
 
         return $this->toNode($row);
+    }
+
+    /**
+     * Merge $dropId into $keepId: every edge is repointed to the kept node
+     * (collisions with an existing (from,to,relation) edge and would-be
+     * self-loops are dropped), properties merge (the kept node wins on
+     * conflicts), and the duplicate node is removed. The primitive behind
+     * near-duplicate cleanup (weave:dedup).
+     */
+    public function mergeNodes(string $keepId, string $dropId): void
+    {
+        if ($keepId === $dropId) {
+            return;
+        }
+        $keep = $this->nodes()->query()
+            ->where(NodeResource::column('id'), Operator::Equals, $keepId)
+            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        $drop = $this->nodes()->query()
+            ->where(NodeResource::column('id'), Operator::Equals, $dropId)
+            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        if (!$keep instanceof NodeResource || !$drop instanceof NodeResource) {
+            return;
+        }
+
+        foreach (array_merge($this->edgesFrom($dropId), $this->edgesTo($dropId)) as $edge) {
+            $newFrom = $edge->fromId === $dropId ? $keepId : $edge->fromId;
+            $newTo = $edge->toId === $dropId ? $keepId : $edge->toId;
+            $this->removeEdge($edge->id);
+            if ($newFrom === $newTo) {
+                continue; // a self-loop carries no information
+            }
+            // addEdge() dedups on (from, to, relation), so collisions collapse.
+            $this->addEdge($newFrom, $newTo, $edge->relation, $edge->weight, $edge->source);
+        }
+
+        $now = new \DateTimeImmutable();
+        $this->nodes()->update(new NodeResource(
+            id: $keep->id,
+            kind: $keep->kind,
+            title: $keep->title,
+            title_key: $keep->title_key,
+            properties_json: $this->encode(array_merge(
+                $this->decode($drop->properties_json),
+                $this->decode($keep->properties_json),
+            )),
+            source: $keep->source !== '' ? $keep->source : $drop->source,
+            created_at: $keep->created_at,
+            updated_at: $now,
+        ));
+        $this->nodes()->delete($drop);
     }
 
     public function addEdge(string $fromId, string $toId, string $relation, int $weight = 100, string $source = ''): Edge
@@ -320,10 +399,7 @@ final class GraphStore implements GraphStoreInterface
 
     private function titleKey(string $title): string
     {
-        $key = mb_strtolower(trim($title));
-        $key = (string) preg_replace('/\s+/', ' ', $key);
-
-        return mb_substr($key, 0, 255);
+        return TitleKey::exact($title);
     }
 
     /** @param array<string, mixed> $properties */
