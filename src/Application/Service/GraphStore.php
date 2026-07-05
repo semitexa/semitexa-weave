@@ -31,7 +31,7 @@ use Semitexa\Weave\Domain\Model\TitleKey;
  * callers that `new` this outside DI (same convention as ConversationStore).
  */
 #[SatisfiesServiceContract(of: GraphStoreInterface::class)]
-final class GraphStore implements GraphStoreInterface
+class GraphStore implements GraphStoreInterface
 {
     #[InjectAsReadonly]
     protected OrmManager $orm;
@@ -45,25 +45,9 @@ final class GraphStore implements GraphStoreInterface
         $titleKey = $this->titleKey($title);
         $now = new \DateTimeImmutable();
 
-        $existing = $this->nodes()->query()
-            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
-            ->where(NodeResource::column('title_key'), Operator::Equals, $titleKey)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
-
+        $existing = $this->existingNodeByKey($kind, $titleKey);
         if ($existing instanceof NodeResource) {
-            $row = new NodeResource(
-                id: $existing->id,
-                kind: $existing->kind,
-                title: $title !== '' ? $title : $existing->title,
-                title_key: $existing->title_key,
-                properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
-                source: $existing->source !== '' ? $existing->source : $source,
-                created_at: $existing->created_at,
-                updated_at: $now,
-            );
-            $this->nodes()->update($row);
-
-            return $this->toNode($row);
+            return $this->mergeIntoNode($existing, $title !== '' ? $title : $existing->title, $properties, $source, $now);
         }
 
         // Near-duplicate guard: different phrasings of the same thing reduce to
@@ -71,27 +55,9 @@ final class GraphStore implements GraphStoreInterface
         // for Semitexa"). Converge onto the existing node — its (earlier) title
         // stays canonical, new properties merge in. Bounded same-kind scan; the
         // graph is a personal world, not a warehouse.
-        $tokenKey = TitleKey::tokenSet($title);
-        $sameKind = $this->nodes()->query()
-            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
-            ->limit(500)
-            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
-        foreach ($sameKind as $candidate) {
-            if (TitleKey::tokenSet($candidate->title) === $tokenKey) {
-                $merged = new NodeResource(
-                    id: $candidate->id,
-                    kind: $candidate->kind,
-                    title: $candidate->title,
-                    title_key: $candidate->title_key,
-                    properties_json: $this->encode(array_merge($this->decode($candidate->properties_json), $properties)),
-                    source: $candidate->source !== '' ? $candidate->source : $source,
-                    created_at: $candidate->created_at,
-                    updated_at: $now,
-                );
-                $this->nodes()->update($merged);
-
-                return $this->toNode($merged);
-            }
+        $nearDup = $this->findNearDuplicateNode($kind, $title);
+        if ($nearDup instanceof NodeResource) {
+            return $this->mergeIntoNode($nearDup, $nearDup->title, $properties, $source, $now);
         }
 
         $row = new NodeResource(
@@ -104,7 +70,71 @@ final class GraphStore implements GraphStoreInterface
             created_at: $now,
             updated_at: $now,
         );
-        $this->nodes()->insert($row);
+
+        try {
+            $this->nodes()->insert($row);
+
+            return $this->toNode($row);
+        } catch (\Throwable $e) {
+            // Lost the first-write race: a concurrent upsertNode of the same
+            // (kind, title_key) inserted first, and the unique index
+            // uniq_weave_node_kind_title rejected ours (both coroutines passed
+            // the exact-match and near-dup scans before either inserted). The
+            // winner's row exists now — converge onto it and merge our
+            // properties in, rather than propagating a spurious failure and
+            // losing this upsert. If no row is present it was a real error, not
+            // the race: rethrow.
+            $winner = $this->existingNodeByKey($kind, $titleKey);
+            if ($winner instanceof NodeResource) {
+                return $this->mergeIntoNode($winner, $title !== '' ? $title : $winner->title, $properties, $source, $now);
+            }
+
+            throw $e;
+        }
+    }
+
+    /** Exact-match lookup by (kind, normalised title). Also the post-collision re-read. */
+    protected function existingNodeByKey(NodeKind $kind, string $titleKey): ?NodeResource
+    {
+        $row = $this->nodes()->query()
+            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
+            ->where(NodeResource::column('title_key'), Operator::Equals, $titleKey)
+            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+
+        return $row instanceof NodeResource ? $row : null;
+    }
+
+    /** Bounded same-kind scan converging different phrasings onto one node via the content-token set. */
+    protected function findNearDuplicateNode(NodeKind $kind, string $title): ?NodeResource
+    {
+        $tokenKey = TitleKey::tokenSet($title);
+        $sameKind = $this->nodes()->query()
+            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
+            ->limit(500)
+            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+        foreach ($sameKind as $candidate) {
+            if (TitleKey::tokenSet($candidate->title) === $tokenKey) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /** Merge properties/source into an existing node row (last-title-wins per the caller's resolution) and persist. */
+    private function mergeIntoNode(NodeResource $existing, string $title, array $properties, string $source, \DateTimeImmutable $now): Node
+    {
+        $row = new NodeResource(
+            id: $existing->id,
+            kind: $existing->kind,
+            title: $title,
+            title_key: $existing->title_key,
+            properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
+            source: $existing->source !== '' ? $existing->source : $source,
+            created_at: $existing->created_at,
+            updated_at: $now,
+        );
+        $this->nodes()->update($row);
 
         return $this->toNode($row);
     }
@@ -165,26 +195,9 @@ final class GraphStore implements GraphStoreInterface
         $weight = max(0, min(100, $weight));
         $now = new \DateTimeImmutable();
 
-        $existing = $this->edges()->query()
-            ->where(EdgeResource::column('from_id'), Operator::Equals, $fromId)
-            ->where(EdgeResource::column('to_id'), Operator::Equals, $toId)
-            ->where(EdgeResource::column('relation'), Operator::Equals, $relation)
-            ->fetchOneAs(EdgeResource::class, $this->orm()->getMapperRegistry());
-
+        $existing = $this->existingEdgeByTriple($fromId, $toId, $relation);
         if ($existing instanceof EdgeResource) {
-            $row = new EdgeResource(
-                id: $existing->id,
-                from_id: $fromId,
-                to_id: $toId,
-                relation: $relation,
-                weight: max($weight, $existing->weight), // an asserted edge upgrades an inferred one
-                source: $existing->source !== '' ? $existing->source : $source,
-                created_at: $existing->created_at,
-                updated_at: $now,
-            );
-            $this->edges()->update($row);
-
-            return $this->toEdge($row);
+            return $this->mergeIntoEdge($existing, $fromId, $toId, $relation, $weight, $source, $now);
         }
 
         $row = new EdgeResource(
@@ -197,7 +210,52 @@ final class GraphStore implements GraphStoreInterface
             created_at: $now,
             updated_at: $now,
         );
-        $this->edges()->insert($row);
+
+        try {
+            $this->edges()->insert($row);
+
+            return $this->toEdge($row);
+        } catch (\Throwable $e) {
+            // Lost the first-write race: a concurrent addEdge of the same
+            // (from_id, to_id, relation) inserted first and the unique index
+            // uniq_weave_edge_triple rejected ours. Converge onto the winner
+            // and fold in our weight (max) instead of failing and losing the
+            // assertion. No row present ⇒ a real error, not the race: rethrow.
+            $winner = $this->existingEdgeByTriple($fromId, $toId, $relation);
+            if ($winner instanceof EdgeResource) {
+                return $this->mergeIntoEdge($winner, $fromId, $toId, $relation, $weight, $source, $now);
+            }
+
+            throw $e;
+        }
+    }
+
+    /** Exact-match lookup by (from_id, to_id, relation). Also the post-collision re-read. */
+    protected function existingEdgeByTriple(string $fromId, string $toId, string $relation): ?EdgeResource
+    {
+        $row = $this->edges()->query()
+            ->where(EdgeResource::column('from_id'), Operator::Equals, $fromId)
+            ->where(EdgeResource::column('to_id'), Operator::Equals, $toId)
+            ->where(EdgeResource::column('relation'), Operator::Equals, $relation)
+            ->fetchOneAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+
+        return $row instanceof EdgeResource ? $row : null;
+    }
+
+    /** Fold a new assertion into an existing edge: weight upgrades (max), source fills if empty, then persist. */
+    private function mergeIntoEdge(EdgeResource $existing, string $fromId, string $toId, string $relation, int $weight, string $source, \DateTimeImmutable $now): Edge
+    {
+        $row = new EdgeResource(
+            id: $existing->id,
+            from_id: $fromId,
+            to_id: $toId,
+            relation: $relation,
+            weight: max($weight, $existing->weight), // an asserted edge upgrades an inferred one
+            source: $existing->source !== '' ? $existing->source : $source,
+            created_at: $existing->created_at,
+            updated_at: $now,
+        );
+        $this->edges()->update($row);
 
         return $this->toEdge($row);
     }
