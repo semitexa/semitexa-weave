@@ -323,64 +323,74 @@ class GraphStore implements GraphStoreInterface
 
     public function neighborhood(string $nodeId): array
     {
-        $edges = array_merge($this->edgesFrom($nodeId), $this->edgesTo($nodeId));
+        // 2 edge queries + 1 node query, regardless of degree — was O(neighbours)
+        // (one node() SELECT per neighbour plus one for the centre).
+        $edges = $this->edgesTouching([$nodeId]);
 
         $neighborIds = [];
         foreach ($edges as $edge) {
             $other = $edge->fromId === $nodeId ? $edge->toId : $edge->fromId;
             $neighborIds[$other] = true;
         }
+        $neighborIds = array_keys($neighborIds);
+
+        $nodeMap = $this->nodesByIds(array_merge([$nodeId], $neighborIds));
 
         $neighbors = [];
-        foreach (array_keys($neighborIds) as $id) {
-            $neighbor = $this->node($id);
-            if ($neighbor !== null) {
-                $neighbors[] = $neighbor;
+        foreach ($neighborIds as $id) {
+            if (isset($nodeMap[$id])) {
+                $neighbors[] = $nodeMap[$id];
             }
         }
 
-        return ['node' => $this->node($nodeId), 'edges' => $edges, 'neighbors' => $neighbors];
+        return ['node' => $nodeMap[$nodeId] ?? null, 'edges' => $edges, 'neighbors' => $neighbors];
     }
 
     public function subgraph(string $nodeId, int $depth = 1): array
     {
         $depth = max(1, min(3, $depth));
-        $center = $this->node($nodeId);
-        if ($center === null) {
+        $centerMap = $this->nodesByIds([$nodeId]);
+        if (!isset($centerMap[$nodeId])) {
             return ['nodes' => [], 'edges' => []];
         }
 
         /** @var array<string, \Semitexa\Weave\Domain\Model\Node> $nodes */
-        $nodes = [$nodeId => $center];
-        /** @var array<string, \Semitexa\Weave\Domain\Model\Edge> $edges */
-        $edges = [];
+        $nodes = [$nodeId => $centerMap[$nodeId]];
         $frontier = [$nodeId];
 
+        // Batched BFS: 2 edge queries + 1 node query PER HOP (depth ≤ 3), instead
+        // of 3 SELECTs per visited node (edgesFrom + edgesTo + node) — O(hops),
+        // not O(N). A hub node no longer explodes the query count.
         for ($hop = 0; $hop < $depth && $frontier !== []; $hop++) {
-            $next = [];
-            foreach ($frontier as $id) {
-                foreach (array_merge($this->edgesFrom($id), $this->edgesTo($id)) as $edge) {
-                    $edges[$edge->id] = $edge;
-                    $other = $edge->fromId === $id ? $edge->toId : $edge->fromId;
-                    if (!isset($nodes[$other])) {
-                        $neighbor = $this->node($other);
-                        if ($neighbor !== null) {
-                            $nodes[$other] = $neighbor;
-                            $next[] = $other;
-                        }
+            $candidateIds = [];
+            foreach ($this->edgesTouching($frontier) as $edge) {
+                foreach ([$edge->fromId, $edge->toId] as $end) {
+                    if (!isset($nodes[$end])) {
+                        $candidateIds[$end] = true;
                     }
+                }
+            }
+            $candidateIds = array_keys($candidateIds);
+            $newNodes = $this->nodesByIds($candidateIds);
+
+            $next = [];
+            foreach ($candidateIds as $id) {
+                if (isset($newNodes[$id])) {
+                    $nodes[$id] = $newNodes[$id];
+                    $next[] = $id;
                 }
             }
             $frontier = $next;
         }
 
-        // Rim cross-links: edges between two included nodes that BFS reached
-        // through other paths — without them the local view loses real structure.
-        foreach (array_keys($nodes) as $id) {
-            foreach ($this->edgesFrom($id) as $edge) {
-                if (isset($nodes[$edge->toId])) {
-                    $edges[$edge->id] = $edge;
-                }
+        // Every internal edge of the discovered node set, in one batched pass.
+        // This subsumes the old per-node BFS edge collection AND the rim
+        // cross-link sweep (edges between two included nodes reached via other
+        // paths); dangling edges to non-existent nodes are naturally excluded.
+        $edges = [];
+        foreach ($this->edgesTouching(array_keys($nodes)) as $edge) {
+            if (isset($nodes[$edge->fromId]) && isset($nodes[$edge->toId])) {
+                $edges[$edge->id] = $edge;
             }
         }
 
@@ -433,6 +443,62 @@ class GraphStore implements GraphStoreInterface
             'nodes' => $this->nodes()->query()->count(),
             'edges' => $this->edges()->query()->count(),
         ];
+    }
+
+    /**
+     * Batched node hydration for a set of ids — one `WHERE id IN(...)` instead
+     * of one SELECT per id. Existing nodes only; keyed by id.
+     *
+     * @param list<string> $ids
+     * @return array<string, Node>
+     */
+    private function nodesByIds(array $ids): array
+    {
+        $ids = array_values(array_unique($ids));
+        if ($ids === []) {
+            return [];
+        }
+        $rows = $this->nodes()->query()
+            ->whereIn(NodeResource::column('id'), $ids)
+            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+
+        $map = [];
+        foreach ($rows as $row) {
+            $map[$row->id] = $this->toNode($row);
+        }
+
+        return $map;
+    }
+
+    /**
+     * Every edge with an endpoint in $ids, deduped by edge id — two batched
+     * `WHERE from_id IN(...)` / `WHERE to_id IN(...)` queries (the query builder
+     * has no OR-group, so a union of two INs replaces it) instead of a pair of
+     * SELECTs per node.
+     *
+     * @param list<string> $ids
+     * @return list<Edge>
+     */
+    private function edgesTouching(array $ids): array
+    {
+        $ids = array_values(array_unique($ids));
+        if ($ids === []) {
+            return [];
+        }
+        $registry = $this->orm()->getMapperRegistry();
+        $from = $this->edges()->query()
+            ->whereIn(EdgeResource::column('from_id'), $ids)
+            ->fetchAllAs(EdgeResource::class, $registry);
+        $to = $this->edges()->query()
+            ->whereIn(EdgeResource::column('to_id'), $ids)
+            ->fetchAllAs(EdgeResource::class, $registry);
+
+        $byId = [];
+        foreach (array_merge($from, $to) as $row) {
+            $byId[$row->id] = $row;
+        }
+
+        return array_map($this->toEdge(...), array_values($byId));
     }
 
     /** @return list<Edge> */
