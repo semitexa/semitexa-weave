@@ -6,6 +6,7 @@ namespace Semitexa\Weave\Application\Service;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
+use Semitexa\Orm\Application\Service\OrmBackedStore;
 use Semitexa\Orm\Application\Service\Uuid7;
 use Semitexa\Orm\OrmManager;
 use Semitexa\Orm\Query\Direction;
@@ -27,17 +28,16 @@ use Semitexa\Weave\Domain\Model\TitleKey;
  * doesn't duplicate. Properties are a JSON bag on the row (the store en/decodes
  * it and wraps rows into {@see Node}/{@see Edge} value objects).
  *
- * The OrmManager is injected for container-managed callers and lazily built for
- * callers that `new` this outside DI (same convention as ConversationStore).
+ * OrmManager wiring (injection + lazy fallback + memoized repositories) comes
+ * from {@see OrmBackedStore}.
  */
 #[SatisfiesServiceContract(of: GraphStoreInterface::class)]
 class GraphStore implements GraphStoreInterface
 {
+    use OrmBackedStore;
+
     #[InjectAsReadonly]
     protected OrmManager $orm;
-
-    private ?DomainRepository $nodeRepo = null;
-    private ?DomainRepository $edgeRepo = null;
 
     public function upsertNode(NodeKind $kind, string $title, array $properties = [], string $source = ''): Node
     {
@@ -99,7 +99,7 @@ class GraphStore implements GraphStoreInterface
         $row = $this->nodes()->query()
             ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
             ->where(NodeResource::column('title_key'), Operator::Equals, $titleKey)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
 
         return $row instanceof NodeResource ? $row : null;
     }
@@ -111,7 +111,7 @@ class GraphStore implements GraphStoreInterface
         $sameKind = $this->nodes()->query()
             ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
             ->limit(500)
-            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(NodeResource::class, $this->mapperRegistry());
         foreach ($sameKind as $candidate) {
             if (TitleKey::tokenSet($candidate->title) === $tokenKey) {
                 return $candidate;
@@ -153,10 +153,10 @@ class GraphStore implements GraphStoreInterface
         }
         $keep = $this->nodes()->query()
             ->where(NodeResource::column('id'), Operator::Equals, $keepId)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
         $drop = $this->nodes()->query()
             ->where(NodeResource::column('id'), Operator::Equals, $dropId)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
         if (!$keep instanceof NodeResource || !$drop instanceof NodeResource) {
             return;
         }
@@ -237,7 +237,7 @@ class GraphStore implements GraphStoreInterface
             ->where(EdgeResource::column('from_id'), Operator::Equals, $fromId)
             ->where(EdgeResource::column('to_id'), Operator::Equals, $toId)
             ->where(EdgeResource::column('relation'), Operator::Equals, $relation)
-            ->fetchOneAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(EdgeResource::class, $this->mapperRegistry());
 
         return $row instanceof EdgeResource ? $row : null;
     }
@@ -264,7 +264,7 @@ class GraphStore implements GraphStoreInterface
     {
         $existing = $this->nodes()->query()
             ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
         if (!$existing instanceof NodeResource) {
             return null;
         }
@@ -289,7 +289,7 @@ class GraphStore implements GraphStoreInterface
     {
         $row = $this->nodes()->query()
             ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
 
         return $row instanceof NodeResource ? $this->toNode($row) : null;
     }
@@ -303,7 +303,7 @@ class GraphStore implements GraphStoreInterface
             $query->limit($limit);
         }
 
-        return array_map($this->toNode(...), $query->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry()));
+        return array_map($this->toNode(...), $query->fetchAllAs(NodeResource::class, $this->mapperRegistry()));
     }
 
     public function search(string $term, int $limit = 20): array
@@ -316,7 +316,7 @@ class GraphStore implements GraphStoreInterface
             ->whereLike(NodeResource::column('title'), '%' . $term . '%')
             ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
             ->limit($limit)
-            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(NodeResource::class, $this->mapperRegistry());
 
         return array_map($this->toNode(...), $rows);
     }
@@ -403,10 +403,10 @@ class GraphStore implements GraphStoreInterface
         $nodeRows = $this->nodes()->query()
             ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
             ->limit($limit)
-            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(NodeResource::class, $this->mapperRegistry());
         $edgeRows = $this->edges()->query()
             ->limit($limit * 8)
-            ->fetchAllAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(EdgeResource::class, $this->mapperRegistry());
 
         return [
             'nodes' => array_map($this->toNode(...), $nodeRows),
@@ -421,7 +421,7 @@ class GraphStore implements GraphStoreInterface
         }
         $row = $this->nodes()->query()
             ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(NodeResource::class, $this->mapperRegistry());
         if ($row instanceof NodeResource) {
             $this->nodes()->delete($row);
         }
@@ -431,7 +431,7 @@ class GraphStore implements GraphStoreInterface
     {
         $row = $this->edges()->query()
             ->where(EdgeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchOneAs(EdgeResource::class, $this->mapperRegistry());
         if ($row instanceof EdgeResource) {
             $this->edges()->delete($row);
         }
@@ -460,7 +460,7 @@ class GraphStore implements GraphStoreInterface
         }
         $rows = $this->nodes()->query()
             ->whereIn(NodeResource::column('id'), $ids)
-            ->fetchAllAs(NodeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(NodeResource::class, $this->mapperRegistry());
 
         $map = [];
         foreach ($rows as $row) {
@@ -485,7 +485,7 @@ class GraphStore implements GraphStoreInterface
         if ($ids === []) {
             return [];
         }
-        $registry = $this->orm()->getMapperRegistry();
+        $registry = $this->mapperRegistry();
         $from = $this->edges()->query()
             ->whereIn(EdgeResource::column('from_id'), $ids)
             ->fetchAllAs(EdgeResource::class, $registry);
@@ -506,7 +506,7 @@ class GraphStore implements GraphStoreInterface
     {
         $rows = $this->edges()->query()
             ->where(EdgeResource::column('from_id'), Operator::Equals, $nodeId)
-            ->fetchAllAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(EdgeResource::class, $this->mapperRegistry());
 
         return array_map($this->toEdge(...), $rows);
     }
@@ -516,7 +516,7 @@ class GraphStore implements GraphStoreInterface
     {
         $rows = $this->edges()->query()
             ->where(EdgeResource::column('to_id'), Operator::Equals, $nodeId)
-            ->fetchAllAs(EdgeResource::class, $this->orm()->getMapperRegistry());
+            ->fetchAllAs(EdgeResource::class, $this->mapperRegistry());
 
         return array_map($this->toEdge(...), $rows);
     }
@@ -569,16 +569,11 @@ class GraphStore implements GraphStoreInterface
 
     private function nodes(): DomainRepository
     {
-        return $this->nodeRepo ??= $this->orm()->repository(NodeResource::class, NodeResource::class);
+        return $this->domainRepository(NodeResource::class);
     }
 
     private function edges(): DomainRepository
     {
-        return $this->edgeRepo ??= $this->orm()->repository(EdgeResource::class, EdgeResource::class);
-    }
-
-    private function orm(): OrmManager
-    {
-        return $this->orm ??= new OrmManager();
+        return $this->domainRepository(EdgeResource::class);
     }
 }
