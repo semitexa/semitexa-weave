@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Semitexa\Weave\Application\Service;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Tenant\TenantContextAccess;
+use Semitexa\Core\Tenant\TenantContextStoreInterface;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Orm\Application\Service\OrmBackedStore;
 use Semitexa\Orm\Application\Service\Uuid7;
@@ -39,6 +41,22 @@ class GraphStore implements GraphStoreInterface
     #[InjectAsReadonly]
     protected OrmManager $orm;
 
+    /**
+     * Ambient-tenant seam (coroutine-local), resolved AT CALL TIME. The graph
+     * is per-tenant knowledge: nodes()/edges() bind this so every read is
+     * filtered and every write is stamped. Mirrors CalendarEventDbRepository.
+     */
+    #[InjectAsReadonly]
+    protected TenantContextStoreInterface $tenantContextStore;
+
+    /** Test seam — production path uses property injection. */
+    public function withTenantContextStore(TenantContextStoreInterface $store): self
+    {
+        $this->tenantContextStore = $store;
+
+        return $this;
+    }
+
     public function upsertNode(NodeKind $kind, string $title, array $properties = [], string $source = ''): Node
     {
         $title = trim($title);
@@ -62,6 +80,7 @@ class GraphStore implements GraphStoreInterface
 
         $row = new NodeResource(
             id: Uuid7::generate(),
+            tenant_id: $this->currentTenantId(),
             kind: $kind->value,
             title: $title,
             title_key: $titleKey,
@@ -126,6 +145,7 @@ class GraphStore implements GraphStoreInterface
     {
         $row = new NodeResource(
             id: $existing->id,
+            tenant_id: $this->currentTenantId(),
             kind: $existing->kind,
             title: $title,
             title_key: $existing->title_key,
@@ -174,6 +194,7 @@ class GraphStore implements GraphStoreInterface
 
         $now = new \DateTimeImmutable();
         $this->nodes()->update(new NodeResource(
+            tenant_id: $this->currentTenantId(),
             id: $keep->id,
             kind: $keep->kind,
             title: $keep->title,
@@ -202,6 +223,7 @@ class GraphStore implements GraphStoreInterface
 
         $row = new EdgeResource(
             id: Uuid7::generate(),
+            tenant_id: $this->currentTenantId(),
             from_id: $fromId,
             to_id: $toId,
             relation: $relation,
@@ -247,6 +269,7 @@ class GraphStore implements GraphStoreInterface
     {
         $row = new EdgeResource(
             id: $existing->id,
+            tenant_id: $this->currentTenantId(),
             from_id: $fromId,
             to_id: $toId,
             relation: $relation,
@@ -272,6 +295,7 @@ class GraphStore implements GraphStoreInterface
         $newTitle = ($title !== null && trim($title) !== '') ? trim($title) : $existing->title;
         $row = new NodeResource(
             id: $existing->id,
+            tenant_id: $this->currentTenantId(),
             kind: $existing->kind,
             title: $newTitle,
             title_key: $this->titleKey($newTitle),
@@ -568,11 +592,22 @@ class GraphStore implements GraphStoreInterface
 
     private function nodes(): DomainRepository
     {
-        return $this->domainRepository(NodeResource::class);
+        return $this->domainRepository(NodeResource::class)->forTenant($this->currentTenantId());
     }
 
     private function edges(): DomainRepository
     {
-        return $this->domainRepository(EdgeResource::class);
+        return $this->domainRepository(EdgeResource::class)->forTenant($this->currentTenantId());
+    }
+
+    /**
+     * Current tenant id, or the 'default' sentinel — never null, so the
+     * fail-closed tenant filter always binds a concrete value.
+     */
+    private function currentTenantId(): string
+    {
+        $context = isset($this->tenantContextStore) ? $this->tenantContextStore->tryGet() : null;
+
+        return TenantContextAccess::tenantIdOrDefault($context);
     }
 }
