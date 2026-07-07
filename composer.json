@@ -26,7 +26,6 @@
             "description": "Knowledge/relationship graph: typed nodes + edges, the organizing layer woven from OS activity"
         }
     },
-    "version": "0.0.1",
     "keywords": [
         "semitexa",
         "weave",
