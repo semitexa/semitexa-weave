@@ -7,6 +7,7 @@ namespace Semitexa\Weave\Tests\Integration\Db;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Orm\Adapter\DatabaseAdapterInterface;
+use Semitexa\Orm\Adapter\SqliteAdapter;
 use Semitexa\Orm\Adapter\QueryResult;
 use Semitexa\Orm\Adapter\ServerCapability;
 use Semitexa\Orm\Domain\Model\ConnectionConfig;
@@ -35,14 +36,14 @@ final class GraphStoreTraversalTest extends TestCase
         $real = $this->orm->getAdapter();
         $real->execute(
             'CREATE TABLE weave_node (
-                id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
+                id TEXT PRIMARY KEY, tenant_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL, title_key TEXT NOT NULL,
                 properties_json TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )',
         );
-        $real->execute('CREATE UNIQUE INDEX uniq_weave_node_kind_title ON weave_node (kind, title_key)');
+        $real->execute('CREATE UNIQUE INDEX uniq_weave_node_kind_title ON weave_node (tenant_id, kind, title_key)');
         $real->execute(
             'CREATE TABLE weave_edge (
-                id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL,
+                id TEXT PRIMARY KEY, tenant_id TEXT, from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL,
                 weight INTEGER NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )',
         );
@@ -137,16 +138,30 @@ final class GraphStoreTraversalTest extends TestCase
     }
 }
 
-/** Wraps a real adapter and counts execute()/query() round-trips. */
-final class CountingAdapter implements DatabaseAdapterInterface
+/**
+ * Counts execute()/query() round-trips. Extends SqliteAdapter (sharing the
+ * inner's PDO) so the transactional write path — which detects SQLite via
+ * `instanceof SqliteAdapter` and runs on getPdo() — still works; graph-setup
+ * writes go direct to the shared PDO (uncounted), while the traversal READS
+ * this test asserts on flow through execute()/query() and ARE counted.
+ */
+final class CountingAdapter extends SqliteAdapter
 {
     public int $count = 0;
 
-    public function __construct(private readonly DatabaseAdapterInterface $inner) {}
+    public function __construct(private readonly SqliteAdapter $inner)
+    {
+        parent::__construct('sqlite::memory:'); // never opened — getPdo() is overridden
+    }
 
     public function reset(): void
     {
         $this->count = 0;
+    }
+
+    public function getPdo(): \PDO
+    {
+        return $this->inner->getPdo();
     }
 
     public function execute(string $sql, array $params = []): QueryResult

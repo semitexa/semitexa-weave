@@ -9,6 +9,7 @@ use Semitexa\Orm\Attribute\Column;
 use Semitexa\Orm\Attribute\FromTable;
 use Semitexa\Orm\Attribute\Index;
 use Semitexa\Orm\Attribute\PrimaryKey;
+use Semitexa\Orm\Attribute\TenantScoped;
 use Semitexa\Orm\Metadata\HasColumnReferences;
 use Semitexa\Orm\Metadata\HasRelationReferences;
 
@@ -21,6 +22,7 @@ use Semitexa\Orm\Metadata\HasRelationReferences;
 #[Index(columns: ['from_id', 'to_id', 'relation'], unique: true, name: 'uniq_weave_edge_triple')]
 #[Index(columns: ['from_id'], name: 'idx_weave_edge_from')]
 #[Index(columns: ['to_id'], name: 'idx_weave_edge_to')]
+#[TenantScoped(strategy: 'same_storage', column: 'tenant_id')]
 final readonly class EdgeResource
 {
     use HasColumnReferences;
@@ -30,6 +32,10 @@ final readonly class EdgeResource
         #[PrimaryKey(strategy: 'manual')]
         #[Column(type: MySqlType::Varchar, length: 36)]
         public string $id,
+
+        /** Owning tenant; edges are tenant-local (from_id/to_id are tenant node ids). */
+        #[Column(type: MySqlType::Varchar, length: 64, nullable: true)]
+        public ?string $tenant_id,
 
         #[Column(type: MySqlType::Varchar, length: 36)]
         public string $from_id,
