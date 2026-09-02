@@ -302,6 +302,7 @@ class GraphStore implements GraphStoreInterface
             kind: $existing->kind,
             title: $newTitle,
             title_key: $this->titleKey($newTitle),
+            ext_ref: $existing->ext_ref,
             properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
             source: $existing->source,
             created_at: $existing->created_at,
