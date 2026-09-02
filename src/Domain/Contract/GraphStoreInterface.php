@@ -75,7 +75,13 @@ interface GraphStoreInterface
      *
      * @return array{nodes: list<Node>, edges: list<Edge>}
      */
-    public function graph(int $limit = 500): array;
+    /**
+     * @param list<NodeKind>|null $kinds Restrict to these kinds; null = every kind.
+     *        A store holds more than one graph — the person's world and the
+     *        structure of the sites they manage — and a view that asks for
+     *        "everything" almost never means both.
+     */
+    public function graph(int $limit = 500, ?array $kinds = null): array;
 
     /**
      * Merge $dropId into $keepId: edges repointed (collisions and self-loops

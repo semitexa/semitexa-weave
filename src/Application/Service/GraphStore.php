@@ -421,10 +421,19 @@ class GraphStore implements GraphStoreInterface
         return ['nodes' => array_values($nodes), 'edges' => array_values($edges)];
     }
 
-    public function graph(int $limit = 500): array
+    public function graph(int $limit = 500, ?array $kinds = null): array
     {
         $limit = max(1, $limit);
-        $nodeRows = $this->nodes()->query()
+        $nodeQuery = $this->nodes()->query();
+
+        if ($kinds !== null) {
+            $nodeQuery->whereIn(
+                NodeResource::column('kind'),
+                array_map(static fn (NodeKind $kind): string => $kind->value, $kinds),
+            );
+        }
+
+        $nodeRows = $nodeQuery
             ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
             ->limit($limit)
             ->fetchAllAs(NodeResource::class);
