@@ -27,6 +27,18 @@ interface GraphStoreInterface
      * Create or fetch an edge, deduped by (from, to, relation). A higher weight
      * on a repeat wins (an asserted edge upgrades an inferred one).
      */
+    /**
+     * Upsert a node whose identity is a record outside the graph (a page row, a
+     * media asset). Unlike {@see upsertNode()}, the title may change freely: the
+     * ref is what makes it the same node.
+     *
+     * @param array<string, mixed> $properties
+     */
+    public function upsertNodeByRef(NodeKind $kind, string $ref, string $title, array $properties = [], string $source = ''): Node;
+
+    /** The node mirroring this record, or null when nothing mirrors it. */
+    public function nodeByRef(string $ref): ?Node;
+
     public function addEdge(string $fromId, string $toId, string $relation, int $weight = 100, string $source = ''): Edge;
 
     /**

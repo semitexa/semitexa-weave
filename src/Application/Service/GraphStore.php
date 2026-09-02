@@ -84,6 +84,7 @@ class GraphStore implements GraphStoreInterface
             kind: $kind->value,
             title: $title,
             title_key: $titleKey,
+            ext_ref: null,
             properties_json: $this->encode($properties),
             source: $source,
             created_at: $now,
@@ -149,6 +150,7 @@ class GraphStore implements GraphStoreInterface
             kind: $existing->kind,
             title: $title,
             title_key: $existing->title_key,
+            ext_ref: $existing->ext_ref,
             properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
             source: $existing->source !== '' ? $existing->source : $source,
             created_at: $existing->created_at,
@@ -199,6 +201,7 @@ class GraphStore implements GraphStoreInterface
             kind: $keep->kind,
             title: $keep->title,
             title_key: $keep->title_key,
+            ext_ref: $keep->ext_ref,
             properties_json: $this->encode(array_merge(
                 $this->decode($drop->properties_json),
                 $this->decode($keep->properties_json),
@@ -447,6 +450,88 @@ class GraphStore implements GraphStoreInterface
         ];
     }
 
+    /**
+     * Upsert a node whose identity is a record outside the graph.
+     *
+     * {@see upsertNode()} identifies by title, which is right for a graph a
+     * language model infers from conversation and wrong for one that mirrors
+     * records: renaming a page would mint a second node, and the near-duplicate
+     * guard could quietly fuse two genuinely different places whose titles
+     * happen to share their content words. Here the ref is the identity and the
+     * title is just data that can change freely.
+     */
+    public function upsertNodeByRef(
+        NodeKind $kind,
+        string $ref,
+        string $title,
+        array $properties = [],
+        string $source = '',
+    ): Node {
+        $ref = trim($ref);
+        if ($ref === '') {
+            throw new \InvalidArgumentException('A referenced node needs a non-empty ref.');
+        }
+
+        $title = trim($title);
+        $now = new \DateTimeImmutable();
+        $existing = $this->rowByRef($ref);
+
+        if ($existing instanceof NodeResource) {
+            $row = new NodeResource(
+                id: $existing->id,
+                tenant_id: $this->currentTenantId(),
+                kind: $kind->value,
+                title: $title !== '' ? $title : $existing->title,
+                title_key: $this->titleKey($title !== '' ? $title : $existing->title),
+                ext_ref: $ref,
+                properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
+                source: $source !== '' ? $source : $existing->source,
+                created_at: $existing->created_at,
+                updated_at: $now,
+            );
+            $this->nodes()->update($row);
+
+            return $this->toNode($row);
+        }
+
+        $row = new NodeResource(
+            id: Uuid7::generate(),
+            tenant_id: $this->currentTenantId(),
+            kind: $kind->value,
+            title: $title,
+            title_key: $this->titleKey($title),
+            ext_ref: $ref,
+            properties_json: $this->encode($properties),
+            source: $source,
+            created_at: $now,
+            updated_at: $now,
+        );
+        $this->nodes()->insert($row);
+
+        return $this->toNode($row);
+    }
+
+    /** The node mirroring this record, or null. */
+    public function nodeByRef(string $ref): ?Node
+    {
+        $row = $this->rowByRef(trim($ref));
+
+        return $row instanceof NodeResource ? $this->toNode($row) : null;
+    }
+
+    private function rowByRef(string $ref): ?NodeResource
+    {
+        if ($ref === '') {
+            return null;
+        }
+
+        $row = $this->nodes()->query()
+            ->where(NodeResource::column('ext_ref'), Operator::Equals, $ref)
+            ->fetchOneAs(NodeResource::class);
+
+        return $row instanceof NodeResource ? $row : null;
+    }
+
     public function removeNode(string $id): void
     {
         foreach (array_merge($this->edgesFrom($id), $this->edgesTo($id)) as $edge) {
@@ -582,6 +667,7 @@ class GraphStore implements GraphStoreInterface
             source: $row->source,
             createdAt: $row->created_at->format('c'),
             updatedAt: $row->updated_at->format('c'),
+            ref: $row->ext_ref,
         );
     }
 
