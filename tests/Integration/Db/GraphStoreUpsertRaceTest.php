@@ -43,6 +43,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
                 title_key TEXT NOT NULL,
+                ext_ref TEXT,
                 properties_json TEXT NOT NULL,
                 source TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -50,6 +51,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
             )',
         );
         $db->execute('CREATE UNIQUE INDEX uniq_weave_node_kind_title ON weave_node (tenant_id, kind, title_key)');
+        $db->execute('CREATE UNIQUE INDEX uniq_weave_node_ext_ref ON weave_node (tenant_id, ext_ref)');
         $db->execute(
             'CREATE TABLE weave_edge (
                 id TEXT PRIMARY KEY,

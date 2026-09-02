@@ -15,14 +15,18 @@ use Semitexa\Orm\Metadata\HasRelationReferences;
 
 /**
  * ORM resource for a Weave node. `title_key` is the normalised title used for
- * idempotent upsert (unique per kind); `properties_json` holds the open
- * per-kind property bag (the store json-encodes/decodes it). `final readonly`
+ * idempotent upsert (unique per kind); `ext_ref` is the identity of a node that
+ * MIRRORS something outside the graph (a page row, a media asset), where the
+ * title is data rather than identity and renaming must not mint a second node;
+ * `properties_json` holds the open per-kind property bag (the store
+ * json-encodes/decodes it). `final readonly`
  * with constructor-promoted `#[Column]` per the ORM resource contract; the UUID
  * id is supplied by the store (manual PK strategy).
  */
 #[FromTable(name: 'weave_node')]
 #[Index(columns: ['tenant_id', 'kind', 'title_key'], unique: true, name: 'uniq_weave_node_kind_title')]
 #[Index(columns: ['kind'], name: 'idx_weave_node_kind')]
+#[Index(columns: ['tenant_id', 'ext_ref'], unique: true, name: 'uniq_weave_node_ext_ref')]
 #[TenantScoped(strategy: 'same_storage', column: 'tenant_id')]
 final readonly class NodeResource
 {
@@ -46,6 +50,10 @@ final readonly class NodeResource
 
         #[Column(type: MySqlType::Varchar, length: 255)]
         public string $title_key,
+
+        /** Stable reference to the record this node mirrors, e.g. 'regmus:page:12'. */
+        #[Column(type: MySqlType::Varchar, length: 191, nullable: true)]
+        public ?string $ext_ref,
 
         #[Column(type: MySqlType::LongText)]
         public string $properties_json,

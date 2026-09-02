@@ -26,6 +26,8 @@ final readonly class Node
         public string $source = '',
         public ?string $createdAt = null,
         public ?string $updatedAt = null,
+        /** Set when the node mirrors a record outside the graph; then IT is the identity, not the title. */
+        public ?string $ref = null,
     ) {
     }
 
@@ -38,6 +40,7 @@ final readonly class Node
             'title' => $this->title,
             'properties' => $this->properties,
             'source' => $this->source,
+            'ref' => $this->ref,
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,
         ];
