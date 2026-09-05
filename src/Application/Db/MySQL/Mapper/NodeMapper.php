@@ -27,15 +27,7 @@ final class NodeMapper implements ResourceModelMapperInterface
         $resourceModel instanceof NodeResource
             || throw new \InvalidArgumentException('Unexpected resource model.');
 
-        $decoded = json_decode($resourceModel->properties_json, true);
-        $properties = [];
-        if (is_array($decoded)) {
-            foreach ($decoded as $key => $value) {
-                if (is_string($key)) {
-                    $properties[$key] = $value;
-                }
-            }
-        }
+        $properties = self::decodeProperties($resourceModel->properties_json, $resourceModel->id);
 
         return new Node(
             id: $resourceModel->id,
@@ -71,5 +63,47 @@ final class NodeMapper implements ResourceModelMapperInterface
             created_at: $domainModel->getCreatedAt() ?? $now,
             updated_at: $domainModel->getUpdatedAt() ?? $now,
         );
+    }
+
+    /**
+     * A node's property bag, or a refusal.
+     *
+     * Answering [] for malformed JSON is not the safe option it looks like: the
+     * same node goes back through toSourceModel() on its next merge, and
+     * everything it knew is overwritten with the emptiness the read invented.
+     * The row is the thing that is wrong — say so.
+     *
+     * @return array<string, mixed>
+     */
+    private static function decodeProperties(string $json, string $id): array
+    {
+        if ($json === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new \InvalidArgumentException(
+                sprintf('Weave node %s carries malformed properties_json.', $id),
+                0,
+                $e,
+            );
+        }
+
+        if (!is_array($decoded)) {
+            throw new \InvalidArgumentException(
+                sprintf('Weave node %s carries a non-object properties_json.', $id),
+            );
+        }
+
+        $properties = [];
+        foreach ($decoded as $key => $value) {
+            if (is_string($key)) {
+                $properties[$key] = $value;
+            }
+        }
+
+        return $properties;
     }
 }
