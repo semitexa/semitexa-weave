@@ -65,7 +65,7 @@ final class NodeMapper implements ResourceModelMapperInterface
             ext_ref: $domainModel->getRef(),
             properties_json: (string) json_encode(
                 $domainModel->getProperties(),
-                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
             ),
             source: $domainModel->getSource(),
             created_at: $domainModel->getCreatedAt() ?? $now,

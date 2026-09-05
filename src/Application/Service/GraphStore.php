@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Weave\Application\Service;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Tenant\DefaultTenantContextStore;
 use Semitexa\Core\Tenant\TenantContextAccess;
 use Semitexa\Core\Tenant\TenantContextStoreInterface;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
@@ -664,8 +665,20 @@ class GraphStore implements GraphStoreInterface
      */
     private function currentTenantId(): string
     {
-        $context = isset($this->tenantContextStore) ? $this->tenantContextStore->tryGet() : null;
+        return TenantContextAccess::tenantIdOrDefault($this->tenantContextStore()->tryGet());
+    }
 
-        return TenantContextAccess::tenantIdOrDefault($context);
+    /**
+     * The ambient tenant store, injected or built.
+     *
+     * The store keeps the context in a coroutine-local, so an instance built
+     * here reads exactly what an injected one would. Returning null when the
+     * property is unset — which is what this did — silently answered 'default'
+     * for every caller that constructs the store bare, and under a tenant
+     * fan-out that is one tenant's graph handed to the next.
+     */
+    private function tenantContextStore(): TenantContextStoreInterface
+    {
+        return $this->tenantContextStore ??= new DefaultTenantContextStore();
     }
 }
