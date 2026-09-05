@@ -61,8 +61,8 @@ final class GraphStoreRefIdentityTest extends TestCase
         $first = $store->upsertNodeByRef(NodeKind::Page, 'regmus:page:7', 'Контакти', [], 'cms:map');
         $renamed = $store->upsertNodeByRef(NodeKind::Page, 'regmus:page:7', 'Як нас знайти', [], 'cms:map');
 
-        self::assertSame($first->id, $renamed->id);
-        self::assertSame('Як нас знайти', $renamed->title);
+        self::assertSame($first->getId(), $renamed->getId());
+        self::assertSame('Як нас знайти', $renamed->getTitle());
         self::assertCount(1, $store->nodesByKind(NodeKind::Page));
     }
 
@@ -74,7 +74,7 @@ final class GraphStoreRefIdentityTest extends TestCase
         $a = $store->upsertNodeByRef(NodeKind::Page, 'regmus:page:11', 'Тимчасові виставки', [], 'cms:map');
         $b = $store->upsertNodeByRef(NodeKind::Page, 'regmus:page:12', 'Виставки тимчасові', [], 'cms:map');
 
-        self::assertNotSame($a->id, $b->id);
+        self::assertNotSame($a->getId(), $b->getId());
         self::assertCount(2, $store->nodesByKind(NodeKind::Page));
     }
 
@@ -87,9 +87,9 @@ final class GraphStoreRefIdentityTest extends TestCase
         $found = $store->nodeByRef('regmus:events');
 
         self::assertNotNull($found);
-        self::assertSame('Події', $found->title);
-        self::assertSame('regmus:events', $found->ref);
-        self::assertSame(85, $found->properties['count'] ?? null);
+        self::assertSame('Події', $found->getTitle());
+        self::assertSame('regmus:events', $found->getRef());
+        self::assertSame(85, $found->getProperties()['count'] ?? null);
         self::assertNull($store->nodeByRef('regmus:nothing'));
     }
 
@@ -101,8 +101,8 @@ final class GraphStoreRefIdentityTest extends TestCase
 
         $rebuilt = $store->upsertNodeByRef(NodeKind::Page, 'regmus:page:1', 'Головна', ['sef' => 'home-page-1'], 'cms:map');
 
-        self::assertTrue($rebuilt->properties['pinned'] ?? false);
-        self::assertSame('home-page-1', $rebuilt->properties['sef'] ?? null);
+        self::assertTrue($rebuilt->getProperties()['pinned'] ?? false);
+        self::assertSame('home-page-1', $rebuilt->getProperties()['sef'] ?? null);
     }
 
     #[Test]

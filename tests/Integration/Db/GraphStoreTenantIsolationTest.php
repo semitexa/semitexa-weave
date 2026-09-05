@@ -70,12 +70,12 @@ final class GraphStoreTenantIsolationTest extends TestCase
         $this->ctx->switchTo('globex');
         $globex = $store->upsertNode(NodeKind::Topic, 'Semitexa', ['secret' => 'globex'], 'globex-src');
 
-        self::assertNotSame($acme->id, $globex->id, 'The same (kind, title) is a distinct node per tenant.');
-        self::assertSame(['secret' => 'globex'], $globex->properties, 'No Acme properties bled in.');
+        self::assertNotSame($acme->getId(), $globex->getId(), 'The same (kind, title) is a distinct node per tenant.');
+        self::assertSame(['secret' => 'globex'], $globex->getProperties(), 'No Acme properties bled in.');
         self::assertSame(1, $store->counts()['nodes'], 'Globex counts only its own node.');
 
         $this->ctx->switchTo('acme');
-        self::assertSame(['secret' => 'acme'], $store->node($acme->id)?->properties);
+        self::assertSame(['secret' => 'acme'], $store->node($acme->getId())?->getProperties());
         self::assertSame(1, $store->counts()['nodes']);
     }
 
@@ -85,8 +85,8 @@ final class GraphStoreTenantIsolationTest extends TestCase
         $store = $this->store();
 
         $this->ctx->switchTo('acme');
-        $a1 = $store->upsertNode(NodeKind::Topic, 'A1')->id;
-        $a2 = $store->upsertNode(NodeKind::Topic, 'A2')->id;
+        $a1 = $store->upsertNode(NodeKind::Topic, 'A1')->getId();
+        $a2 = $store->upsertNode(NodeKind::Topic, 'A2')->getId();
         $store->addEdge($a1, $a2, 'relates_to');
 
         // Globex sees an empty graph, and Acme node ids resolve to nothing.

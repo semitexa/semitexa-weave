@@ -8,9 +8,10 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Semitexa\Orm\Domain\Model\ConnectionConfig;
 use Semitexa\Orm\OrmManager;
-use Semitexa\Weave\Application\Db\MySQL\Model\NodeResource;
 use Semitexa\Weave\Application\Service\GraphStore;
 use Semitexa\Weave\Domain\Enum\NodeKind;
+use Semitexa\Weave\Domain\Model\Edge;
+use Semitexa\Weave\Domain\Model\Node;
 
 /**
  * upsertNode/addEdge read (exact-match + near-dup scan) then insert. Under
@@ -80,16 +81,16 @@ final class GraphStoreUpsertRaceTest extends TestCase
         $racer = $this->store(RacingGraphStore::class);
         $node = $racer->upsertNode(NodeKind::Topic, 'Alpha', ['b' => 2], 'src-b');
 
-        self::assertSame(['a' => 1, 'b' => 2], $node->properties, 'the loser must merge its properties into the winner, not be lost');
+        self::assertSame(['a' => 1, 'b' => 2], $node->getProperties(), 'the loser must merge its properties into the winner, not be lost');
         self::assertSame(1, $seeder->counts()['nodes'], 'the UNIQUE index + convergence leave exactly one node');
-        self::assertSame('Alpha', $node->title);
+        self::assertSame('Alpha', $node->getTitle());
     }
 
     #[Test]
     public function a_concurrent_duplicate_edge_insert_converges_and_maxes_the_weight(): void
     {
-        $a = $this->store(GraphStore::class)->upsertNode(NodeKind::Topic, 'A', [], 's')->id;
-        $b = $this->store(GraphStore::class)->upsertNode(NodeKind::Topic, 'B', [], 's')->id;
+        $a = $this->store(GraphStore::class)->upsertNode(NodeKind::Topic, 'A', [], 's')->getId();
+        $b = $this->store(GraphStore::class)->upsertNode(NodeKind::Topic, 'B', [], 's')->getId();
 
         $seeder = $this->store(GraphStore::class);
         $seeder->addEdge($a, $b, 'relates_to', 40, 'src-a');
@@ -97,7 +98,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
         $racer = $this->store(RacingGraphStore::class);
         $edge = $racer->addEdge($a, $b, 'relates_to', 90, 'src-b');
 
-        self::assertSame(90, $edge->weight, 'the asserted (higher) weight must upgrade the inferred one, not be lost');
+        self::assertSame(90, $edge->getWeight(), 'the asserted (higher) weight must upgrade the inferred one, not be lost');
         self::assertSame(1, $seeder->counts()['edges'], 'exactly one edge survives the race');
     }
 
@@ -108,7 +109,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
         $store->upsertNode(NodeKind::Topic, 'Beta', ['x' => 1], 's');
         $node = $store->upsertNode(NodeKind::Topic, 'Beta', ['y' => 2], 's');
 
-        self::assertSame(['x' => 1, 'y' => 2], $node->properties);
+        self::assertSame(['x' => 1, 'y' => 2], $node->getProperties());
         self::assertSame(1, $store->counts()['nodes']);
     }
 
@@ -138,7 +139,7 @@ final class RacingGraphStore extends GraphStore
     private int $nodeReads = 0;
     private int $edgeReads = 0;
 
-    protected function existingNodeByKey(NodeKind $kind, string $titleKey): ?NodeResource
+    protected function existingNodeByKey(NodeKind $kind, string $titleKey): ?Node
     {
         if (++$this->nodeReads === 1) {
             return null;
@@ -147,12 +148,12 @@ final class RacingGraphStore extends GraphStore
         return parent::existingNodeByKey($kind, $titleKey);
     }
 
-    protected function findNearDuplicateNode(NodeKind $kind, string $title): ?NodeResource
+    protected function findNearDuplicateNode(NodeKind $kind, string $title): ?Node
     {
         return null; // skip the token-set convergence so the insert path is reached
     }
 
-    protected function existingEdgeByTriple(string $fromId, string $toId, string $relation): ?\Semitexa\Weave\Application\Db\MySQL\Model\EdgeResource
+    protected function existingEdgeByTriple(string $fromId, string $toId, string $relation): ?Edge
     {
         if (++$this->edgeReads === 1) {
             return null;

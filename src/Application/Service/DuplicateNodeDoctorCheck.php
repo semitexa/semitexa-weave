@@ -52,14 +52,14 @@ final class DuplicateNodeDoctorCheck implements DoctorCheckInterface
     {
         $byTokens = [];
         foreach ($nodes as $node) {
-            $byTokens[TitleKey::tokenSet($node->title)][] = $node;
+            $byTokens[TitleKey::tokenSet($node->getTitle())][] = $node;
         }
 
         $suspects = [];
         foreach ($byTokens as $group) {
-            $kinds = array_unique(array_map(static fn (Node $n): string => $n->kind->value, $group));
+            $kinds = array_unique(array_map(static fn (Node $n): string => $n->getKind()->value, $group));
             if (count($group) > 1 && count($kinds) > 1) {
-                $suspects[] = $group[0]->title . ' (' . implode(', ', $kinds) . ')';
+                $suspects[] = $group[0]->getTitle() . ' (' . implode(', ', $kinds) . ')';
             }
         }
 

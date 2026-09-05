@@ -61,7 +61,7 @@ final class WeaveDedupCommand extends BaseCommand
         /** @var array<string, list<\Semitexa\Weave\Domain\Model\Node>> $clusters */
         $clusters = [];
         foreach ($nodes as $node) {
-            $clusters[$node->kind->value . "\0" . TitleKey::tokenSet($node->title)][] = $node;
+            $clusters[$node->getKind()->value . "\0" . TitleKey::tokenSet($node->getTitle())][] = $node;
         }
 
         $found = 0;
@@ -70,17 +70,17 @@ final class WeaveDedupCommand extends BaseCommand
                 continue;
             }
             $found++;
-            usort($cluster, static fn ($a, $b): int => strcmp($a->id, $b->id)); // UUIDv7 → oldest first
+            usort($cluster, static fn ($a, $b): int => strcmp($a->getId(), $b->getId())); // UUIDv7 → oldest first
             $keep = array_shift($cluster);
             $output->writeln(sprintf(
                 '<info>%s</info> "%s" ← %s',
                 $apply ? 'merging into' : 'would merge into',
-                $keep->title,
-                implode(', ', array_map(static fn ($n): string => '"' . $n->title . '"', $cluster)),
+                $keep->getTitle(),
+                implode(', ', array_map(static fn ($n): string => '"' . $n->getTitle() . '"', $cluster)),
             ));
             if ($apply) {
                 foreach ($cluster as $dup) {
-                    $this->graph->mergeNodes($keep->id, $dup->id);
+                    $this->graph->mergeNodes($keep->getId(), $dup->getId());
                 }
             }
         }
@@ -92,17 +92,17 @@ final class WeaveDedupCommand extends BaseCommand
         // report only; resolve with --merge <keepId>:<dropId>.
         $byTokens = [];
         foreach ($nodes as $node) {
-            $byTokens[TitleKey::tokenSet($node->title)][] = $node;
+            $byTokens[TitleKey::tokenSet($node->getTitle())][] = $node;
         }
         $suspects = 0;
         foreach ($byTokens as $group) {
-            $kinds = array_unique(array_map(static fn ($n): string => $n->kind->value, $group));
+            $kinds = array_unique(array_map(static fn ($n): string => $n->getKind()->value, $group));
             if (count($group) < 2 || count($kinds) < 2) {
                 continue;
             }
             $suspects++;
             $output->writeln('<comment>cross-kind suspect:</comment> ' . implode(' | ', array_map(
-                static fn ($n): string => $n->kind->value . ' "' . $n->title . '" (' . $n->id . ')',
+                static fn ($n): string => $n->getKind()->value . ' "' . $n->getTitle() . '" (' . $n->getId() . ')',
                 $group,
             )));
         }

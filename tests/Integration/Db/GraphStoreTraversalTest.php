@@ -59,9 +59,9 @@ final class GraphStoreTraversalTest extends TestCase
     public function neighborhood_returns_the_centre_its_edges_and_existing_neighbours(): void
     {
         $store = $this->store();
-        $c = $store->upsertNode(NodeKind::Topic, 'Centre')->id;
-        $n1 = $store->upsertNode(NodeKind::Topic, 'N1')->id;
-        $n2 = $store->upsertNode(NodeKind::Topic, 'N2')->id;
+        $c = $store->upsertNode(NodeKind::Topic, 'Centre')->getId();
+        $n1 = $store->upsertNode(NodeKind::Topic, 'N1')->getId();
+        $n2 = $store->upsertNode(NodeKind::Topic, 'N2')->getId();
         $store->addEdge($c, $n1, 'relates_to');
         $store->addEdge($n2, $c, 'relates_to'); // incoming edge — neighbour via to→from
         $store->addEdge($c, 'ghost-missing', 'relates_to'); // orphan: target node absent
@@ -70,9 +70,9 @@ final class GraphStoreTraversalTest extends TestCase
         $hood = $store->neighborhood($c);
         $queries = $this->counter->count;
 
-        self::assertSame('Centre', $hood['node']?->title);
+        self::assertSame('Centre', $hood['node']?->getTitle());
         self::assertCount(3, $hood['edges'], 'all edges touching the centre, incl. the orphan');
-        $neighborTitles = array_map(static fn($n) => $n->title, $hood['neighbors']);
+        $neighborTitles = array_map(static fn($n) => $n->getTitle(), $hood['neighbors']);
         sort($neighborTitles);
         self::assertSame(['N1', 'N2'], $neighborTitles, 'existing neighbours only — the ghost is dropped');
 
@@ -83,24 +83,24 @@ final class GraphStoreTraversalTest extends TestCase
     public function subgraph_walks_to_depth_and_includes_internal_cross_links(): void
     {
         $store = $this->store();
-        $c = $store->upsertNode(NodeKind::Topic, 'C')->id;
-        $a = $store->upsertNode(NodeKind::Topic, 'A')->id;
-        $b = $store->upsertNode(NodeKind::Topic, 'B')->id;
-        $far = $store->upsertNode(NodeKind::Topic, 'Far')->id; // 2 hops from C, via A
+        $c = $store->upsertNode(NodeKind::Topic, 'C')->getId();
+        $a = $store->upsertNode(NodeKind::Topic, 'A')->getId();
+        $b = $store->upsertNode(NodeKind::Topic, 'B')->getId();
+        $far = $store->upsertNode(NodeKind::Topic, 'Far')->getId(); // 2 hops from C, via A
         $store->addEdge($c, $a, 'relates_to');
         $store->addEdge($c, $b, 'relates_to');
         $store->addEdge($a, $b, 'relates_to'); // cross-link between two depth-1 nodes
         $store->addEdge($a, $far, 'relates_to');
 
         $depth1 = $store->subgraph($c, 1);
-        $titles1 = array_map(static fn($n) => $n->title, $depth1['nodes']);
+        $titles1 = array_map(static fn($n) => $n->getTitle(), $depth1['nodes']);
         sort($titles1);
         self::assertSame(['A', 'B', 'C'], $titles1, 'depth 1 = centre + direct neighbours');
         // Internal edges among {C,A,B}: C-A, C-B, and the A-B cross-link.
         self::assertCount(3, $depth1['edges'], 'includes the A–B cross-link, excludes A→Far (Far not in set)');
 
         $depth2 = $store->subgraph($c, 2);
-        $titles2 = array_map(static fn($n) => $n->title, $depth2['nodes']);
+        $titles2 = array_map(static fn($n) => $n->getTitle(), $depth2['nodes']);
         sort($titles2);
         self::assertSame(['A', 'B', 'C', 'Far'], $titles2, 'depth 2 pulls in Far');
         self::assertCount(4, $depth2['edges'], 'now A→Far is internal too');
@@ -110,17 +110,17 @@ final class GraphStoreTraversalTest extends TestCase
     public function subgraph_query_count_does_not_grow_with_the_node_degree(): void
     {
         $store = $this->store();
-        $hub = $store->upsertNode(NodeKind::Topic, 'Hub')->id;
+        $hub = $store->upsertNode(NodeKind::Topic, 'Hub')->getId();
         for ($i = 0; $i < 5; $i++) {
-            $store->addEdge($hub, $store->upsertNode(NodeKind::Topic, "leaf-$i")->id, 'relates_to');
+            $store->addEdge($hub, $store->upsertNode(NodeKind::Topic, "leaf-$i")->getId(), 'relates_to');
         }
         $this->counter->reset();
         $store->subgraph($hub, 1);
         $withFive = $this->counter->count;
 
-        $hub2 = $store->upsertNode(NodeKind::Topic, 'Hub2')->id;
+        $hub2 = $store->upsertNode(NodeKind::Topic, 'Hub2')->getId();
         for ($i = 0; $i < 20; $i++) {
-            $store->addEdge($hub2, $store->upsertNode(NodeKind::Topic, "leaf2-$i")->id, 'relates_to');
+            $store->addEdge($hub2, $store->upsertNode(NodeKind::Topic, "leaf2-$i")->getId(), 'relates_to');
         }
         $this->counter->reset();
         $store->subgraph($hub2, 1);
