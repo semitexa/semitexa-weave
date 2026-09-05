@@ -36,6 +36,18 @@ enum NodeKind: string
     case Org = 'org';
     case Thread = 'thread';
 
+    /**
+     * Something the person is working towards — "move to Portugal next year",
+     * "learn Rust", "finish the renovation before winter".
+     *
+     * A goal is not an entity in their world the way a person or a place is:
+     * nothing in the rest of this vocabulary could hold one, so an intention
+     * either became a vague `topic` or was dropped. Preferences and habits, by
+     * contrast, need no kind of their own — they are predicates on a thing that
+     * already exists ("self interested_in гітара").
+     */
+    case Goal = 'goal';
+
     /** A managed site — the root the rest of its structure hangs from. */
     case Site = 'site';
 

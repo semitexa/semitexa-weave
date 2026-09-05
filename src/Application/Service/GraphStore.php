@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Semitexa\Weave\Application\Service;
 
 use Semitexa\Core\Attribute\InjectAsReadonly;
+use Semitexa\Core\Tenant\DefaultTenantContextStore;
 use Semitexa\Core\Tenant\TenantContextAccess;
 use Semitexa\Core\Tenant\TenantContextStoreInterface;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
@@ -27,8 +28,9 @@ use Semitexa\Weave\Domain\Model\TitleKey;
  * The Weave graph store — idempotent upsert of typed nodes/edges over the ORM
  * (tables `weave_node` / `weave_edge`). Nodes dedup by (kind, normalised title);
  * edges by (from, to, relation), so the same entity/relationship woven twice
- * doesn't duplicate. Properties are a JSON bag on the row (the store en/decodes
- * it and wraps rows into {@see Node}/{@see Edge} value objects).
+ * doesn't duplicate. The store speaks {@see Node}/{@see Edge} throughout; the
+ * row shape — the JSON property bag, the string kind, the derived `title_key` —
+ * lives behind {@see \Semitexa\Weave\Application\Db\MySQL\Mapper\NodeMapper}.
  *
  * OrmManager wiring (injection + lazy fallback + memoized repositories) comes
  * from {@see OrmBackedStore}.
@@ -64,8 +66,8 @@ class GraphStore implements GraphStoreInterface
         $now = new \DateTimeImmutable();
 
         $existing = $this->existingNodeByKey($kind, $titleKey);
-        if ($existing instanceof NodeResource) {
-            return $this->mergeIntoNode($existing, $title !== '' ? $title : $existing->title, $properties, $source, $now);
+        if ($existing instanceof Node) {
+            return $this->mergeIntoNode($existing, $title !== '' ? $title : $existing->getTitle(), $properties, $source, $now);
         }
 
         // Near-duplicate guard: different phrasings of the same thing reduce to
@@ -74,27 +76,25 @@ class GraphStore implements GraphStoreInterface
         // stays canonical, new properties merge in. Bounded same-kind scan; the
         // graph is a personal world, not a warehouse.
         $nearDup = $this->findNearDuplicateNode($kind, $title);
-        if ($nearDup instanceof NodeResource) {
-            return $this->mergeIntoNode($nearDup, $nearDup->title, $properties, $source, $now);
+        if ($nearDup instanceof Node) {
+            return $this->mergeIntoNode($nearDup, $nearDup->getTitle(), $properties, $source, $now);
         }
 
-        $row = new NodeResource(
+        $node = new Node(
             id: Uuid7::generate(),
-            tenant_id: $this->currentTenantId(),
-            kind: $kind->value,
+            kind: $kind,
             title: $title,
-            title_key: $titleKey,
-            ext_ref: null,
-            properties_json: $this->encode($properties),
+            properties: $properties,
             source: $source,
-            created_at: $now,
-            updated_at: $now,
+            createdAt: $now,
+            updatedAt: $now,
+            tenantId: $this->currentTenantId(),
         );
 
         try {
-            $this->nodes()->insert($row);
+            $this->nodes()->insert($node);
 
-            return $this->toNode($row);
+            return $node;
         } catch (\Throwable $e) {
             // Lost the first-write race: a concurrent upsertNode of the same
             // (kind, title_key) inserted first, and the unique index
@@ -105,8 +105,8 @@ class GraphStore implements GraphStoreInterface
             // losing this upsert. If no row is present it was a real error, not
             // the race: rethrow.
             $winner = $this->existingNodeByKey($kind, $titleKey);
-            if ($winner instanceof NodeResource) {
-                return $this->mergeIntoNode($winner, $title !== '' ? $title : $winner->title, $properties, $source, $now);
+            if ($winner instanceof Node) {
+                return $this->mergeIntoNode($winner, $title !== '' ? $title : $winner->getTitle(), $properties, $source, $now);
             }
 
             throw $e;
@@ -114,26 +114,27 @@ class GraphStore implements GraphStoreInterface
     }
 
     /** Exact-match lookup by (kind, normalised title). Also the post-collision re-read. */
-    protected function existingNodeByKey(NodeKind $kind, string $titleKey): ?NodeResource
+    protected function existingNodeByKey(NodeKind $kind, string $titleKey): ?Node
     {
-        $row = $this->nodes()->query()
+        $node = $this->nodes()->query()
             ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
             ->where(NodeResource::column('title_key'), Operator::Equals, $titleKey)
-            ->fetchOneAs(NodeResource::class);
+            ->fetchOneAs(Node::class, $this->mapperRegistry());
 
-        return $row instanceof NodeResource ? $row : null;
+        return $node instanceof Node ? $node : null;
     }
 
     /** Bounded same-kind scan converging different phrasings onto one node via the content-token set. */
-    protected function findNearDuplicateNode(NodeKind $kind, string $title): ?NodeResource
+    protected function findNearDuplicateNode(NodeKind $kind, string $title): ?Node
     {
         $tokenKey = TitleKey::tokenSet($title);
+        /** @var list<Node> $sameKind */
         $sameKind = $this->nodes()->query()
             ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
             ->limit(500)
-            ->fetchAllAs(NodeResource::class);
+            ->fetchAllAs(Node::class, $this->mapperRegistry());
         foreach ($sameKind as $candidate) {
-            if (TitleKey::tokenSet($candidate->title) === $tokenKey) {
+            if (TitleKey::tokenSet($candidate->getTitle()) === $tokenKey) {
                 return $candidate;
             }
         }
@@ -141,24 +142,27 @@ class GraphStore implements GraphStoreInterface
         return null;
     }
 
-    /** Merge properties/source into an existing node row (last-title-wins per the caller's resolution) and persist. */
-    private function mergeIntoNode(NodeResource $existing, string $title, array $properties, string $source, \DateTimeImmutable $now): Node
+    /**
+     * Merge properties/source into an existing node (last-title-wins per the caller's resolution) and persist.
+     *
+     * @param array<string, mixed> $properties
+     */
+    private function mergeIntoNode(Node $existing, string $title, array $properties, string $source, \DateTimeImmutable $now): Node
     {
-        $row = new NodeResource(
-            id: $existing->id,
-            tenant_id: $this->currentTenantId(),
-            kind: $existing->kind,
+        $merged = new Node(
+            id: $existing->getId(),
+            kind: $existing->getKind(),
             title: $title,
-            title_key: $existing->title_key,
-            ext_ref: $existing->ext_ref,
-            properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
-            source: $existing->source !== '' ? $existing->source : $source,
-            created_at: $existing->created_at,
-            updated_at: $now,
+            properties: array_merge($existing->getProperties(), $properties),
+            source: $existing->getSource() !== '' ? $existing->getSource() : $source,
+            createdAt: $existing->getCreatedAt(),
+            updatedAt: $now,
+            ref: $existing->getRef(),
+            tenantId: $this->currentTenantId(),
         );
-        $this->nodes()->update($row);
+        $this->nodes()->update($merged);
 
-        return $this->toNode($row);
+        return $merged;
     }
 
     /**
@@ -173,42 +177,34 @@ class GraphStore implements GraphStoreInterface
         if ($keepId === $dropId) {
             return;
         }
-        $keep = $this->nodes()->query()
-            ->where(NodeResource::column('id'), Operator::Equals, $keepId)
-            ->fetchOneAs(NodeResource::class);
-        $drop = $this->nodes()->query()
-            ->where(NodeResource::column('id'), Operator::Equals, $dropId)
-            ->fetchOneAs(NodeResource::class);
-        if (!$keep instanceof NodeResource || !$drop instanceof NodeResource) {
+        $keep = $this->nodeById($keepId);
+        $drop = $this->nodeById($dropId);
+        if (!$keep instanceof Node || !$drop instanceof Node) {
             return;
         }
 
         foreach (array_merge($this->edgesFrom($dropId), $this->edgesTo($dropId)) as $edge) {
-            $newFrom = $edge->fromId === $dropId ? $keepId : $edge->fromId;
-            $newTo = $edge->toId === $dropId ? $keepId : $edge->toId;
-            $this->removeEdge($edge->id);
+            $newFrom = $edge->getFromId() === $dropId ? $keepId : $edge->getFromId();
+            $newTo = $edge->getToId() === $dropId ? $keepId : $edge->getToId();
+            $this->removeEdge($edge->getId());
             if ($newFrom === $newTo) {
                 continue; // a self-loop carries no information
             }
             // addEdge() dedups on (from, to, relation), so collisions collapse.
-            $this->addEdge($newFrom, $newTo, $edge->relation, $edge->weight, $edge->source);
+            $this->addEdge($newFrom, $newTo, $edge->getRelation(), $edge->getWeight(), $edge->getSource());
         }
 
         $now = new \DateTimeImmutable();
-        $this->nodes()->update(new NodeResource(
-            tenant_id: $this->currentTenantId(),
-            id: $keep->id,
-            kind: $keep->kind,
-            title: $keep->title,
-            title_key: $keep->title_key,
-            ext_ref: $keep->ext_ref,
-            properties_json: $this->encode(array_merge(
-                $this->decode($drop->properties_json),
-                $this->decode($keep->properties_json),
-            )),
-            source: $keep->source !== '' ? $keep->source : $drop->source,
-            created_at: $keep->created_at,
-            updated_at: $now,
+        $this->nodes()->update(new Node(
+            id: $keep->getId(),
+            kind: $keep->getKind(),
+            title: $keep->getTitle(),
+            properties: array_merge($drop->getProperties(), $keep->getProperties()),
+            source: $keep->getSource() !== '' ? $keep->getSource() : $drop->getSource(),
+            createdAt: $keep->getCreatedAt(),
+            updatedAt: $now,
+            ref: $keep->getRef(),
+            tenantId: $this->currentTenantId(),
         ));
         $this->nodes()->delete($drop);
     }
@@ -220,26 +216,26 @@ class GraphStore implements GraphStoreInterface
         $now = new \DateTimeImmutable();
 
         $existing = $this->existingEdgeByTriple($fromId, $toId, $relation);
-        if ($existing instanceof EdgeResource) {
+        if ($existing instanceof Edge) {
             return $this->mergeIntoEdge($existing, $fromId, $toId, $relation, $weight, $source, $now);
         }
 
-        $row = new EdgeResource(
+        $edge = new Edge(
             id: Uuid7::generate(),
-            tenant_id: $this->currentTenantId(),
-            from_id: $fromId,
-            to_id: $toId,
+            fromId: $fromId,
+            toId: $toId,
             relation: $relation,
             weight: $weight,
             source: $source,
-            created_at: $now,
-            updated_at: $now,
+            createdAt: $now,
+            updatedAt: $now,
+            tenantId: $this->currentTenantId(),
         );
 
         try {
-            $this->edges()->insert($row);
+            $this->edges()->insert($edge);
 
-            return $this->toEdge($row);
+            return $edge;
         } catch (\Throwable $e) {
             // Lost the first-write race: a concurrent addEdge of the same
             // (from_id, to_id, relation) inserted first and the unique index
@@ -247,7 +243,7 @@ class GraphStore implements GraphStoreInterface
             // and fold in our weight (max) instead of failing and losing the
             // assertion. No row present ⇒ a real error, not the race: rethrow.
             $winner = $this->existingEdgeByTriple($fromId, $toId, $relation);
-            if ($winner instanceof EdgeResource) {
+            if ($winner instanceof Edge) {
                 return $this->mergeIntoEdge($winner, $fromId, $toId, $relation, $weight, $source, $now);
             }
 
@@ -256,70 +252,73 @@ class GraphStore implements GraphStoreInterface
     }
 
     /** Exact-match lookup by (from_id, to_id, relation). Also the post-collision re-read. */
-    protected function existingEdgeByTriple(string $fromId, string $toId, string $relation): ?EdgeResource
+    protected function existingEdgeByTriple(string $fromId, string $toId, string $relation): ?Edge
     {
-        $row = $this->edges()->query()
+        $edge = $this->edges()->query()
             ->where(EdgeResource::column('from_id'), Operator::Equals, $fromId)
             ->where(EdgeResource::column('to_id'), Operator::Equals, $toId)
             ->where(EdgeResource::column('relation'), Operator::Equals, $relation)
-            ->fetchOneAs(EdgeResource::class);
+            ->fetchOneAs(Edge::class, $this->mapperRegistry());
 
-        return $row instanceof EdgeResource ? $row : null;
+        return $edge instanceof Edge ? $edge : null;
     }
 
     /** Fold a new assertion into an existing edge: weight upgrades (max), source fills if empty, then persist. */
-    private function mergeIntoEdge(EdgeResource $existing, string $fromId, string $toId, string $relation, int $weight, string $source, \DateTimeImmutable $now): Edge
+    private function mergeIntoEdge(Edge $existing, string $fromId, string $toId, string $relation, int $weight, string $source, \DateTimeImmutable $now): Edge
     {
-        $row = new EdgeResource(
-            id: $existing->id,
-            tenant_id: $this->currentTenantId(),
-            from_id: $fromId,
-            to_id: $toId,
+        $merged = new Edge(
+            id: $existing->getId(),
+            fromId: $fromId,
+            toId: $toId,
             relation: $relation,
-            weight: max($weight, $existing->weight), // an asserted edge upgrades an inferred one
-            source: $existing->source !== '' ? $existing->source : $source,
-            created_at: $existing->created_at,
-            updated_at: $now,
+            weight: max($weight, $existing->getWeight()), // an asserted edge upgrades an inferred one
+            source: $existing->getSource() !== '' ? $existing->getSource() : $source,
+            createdAt: $existing->getCreatedAt(),
+            updatedAt: $now,
+            tenantId: $this->currentTenantId(),
         );
-        $this->edges()->update($row);
+        $this->edges()->update($merged);
 
-        return $this->toEdge($row);
+        return $merged;
     }
 
     public function updateNode(string $id, ?string $title = null, array $properties = []): ?Node
     {
-        $existing = $this->nodes()->query()
-            ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class);
-        if (!$existing instanceof NodeResource) {
+        $existing = $this->nodeById($id);
+        if (!$existing instanceof Node) {
             return null;
         }
 
-        $newTitle = ($title !== null && trim($title) !== '') ? trim($title) : $existing->title;
-        $row = new NodeResource(
-            id: $existing->id,
-            tenant_id: $this->currentTenantId(),
-            kind: $existing->kind,
+        $newTitle = ($title !== null && trim($title) !== '') ? trim($title) : $existing->getTitle();
+        $updated = new Node(
+            id: $existing->getId(),
+            kind: $existing->getKind(),
             title: $newTitle,
-            title_key: $this->titleKey($newTitle),
-            ext_ref: $existing->ext_ref,
-            properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
-            source: $existing->source,
-            created_at: $existing->created_at,
-            updated_at: new \DateTimeImmutable(),
+            properties: array_merge($existing->getProperties(), $properties),
+            source: $existing->getSource(),
+            createdAt: $existing->getCreatedAt(),
+            updatedAt: new \DateTimeImmutable(),
+            ref: $existing->getRef(),
+            tenantId: $this->currentTenantId(),
         );
-        $this->nodes()->update($row);
+        $this->nodes()->update($updated);
 
-        return $this->toNode($row);
+        return $updated;
     }
 
     public function node(string $id): ?Node
     {
-        $row = $this->nodes()->query()
-            ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class);
+        return $this->nodeById($id);
+    }
 
-        return $row instanceof NodeResource ? $this->toNode($row) : null;
+    /** One node by id, through the tenant-scoped repository. */
+    private function nodeById(string $id): ?Node
+    {
+        $node = $this->nodes()->query()
+            ->where(NodeResource::column('id'), Operator::Equals, $id)
+            ->fetchOneAs(Node::class, $this->mapperRegistry());
+
+        return $node instanceof Node ? $node : null;
     }
 
     public function nodesByKind(NodeKind $kind, int $limit = 0): array
@@ -331,7 +330,10 @@ class GraphStore implements GraphStoreInterface
             $query->limit($limit);
         }
 
-        return array_map($this->toNode(...), $query->fetchAllAs(NodeResource::class));
+        /** @var list<Node> $nodes */
+        $nodes = $query->fetchAllAs(Node::class, $this->mapperRegistry());
+
+        return $nodes;
     }
 
     public function search(string $term, int $limit = 20): array
@@ -340,13 +342,14 @@ class GraphStore implements GraphStoreInterface
         if ($term === '') {
             return [];
         }
-        $rows = $this->nodes()->query()
+        /** @var list<Node> $hits */
+        $hits = $this->nodes()->query()
             ->whereLike(NodeResource::column('title'), '%' . $term . '%')
             ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
             ->limit($limit)
-            ->fetchAllAs(NodeResource::class);
+            ->fetchAllAs(Node::class, $this->mapperRegistry());
 
-        return array_map($this->toNode(...), $rows);
+        return $hits;
     }
 
     public function neighborhood(string $nodeId): array
@@ -357,7 +360,7 @@ class GraphStore implements GraphStoreInterface
 
         $neighborIds = [];
         foreach ($edges as $edge) {
-            $other = $edge->fromId === $nodeId ? $edge->toId : $edge->fromId;
+            $other = $edge->getFromId() === $nodeId ? $edge->getToId() : $edge->getFromId();
             $neighborIds[$other] = true;
         }
         $neighborIds = array_keys($neighborIds);
@@ -392,7 +395,7 @@ class GraphStore implements GraphStoreInterface
         for ($hop = 0; $hop < $depth && $frontier !== []; $hop++) {
             $candidateIds = [];
             foreach ($this->edgesTouching($frontier) as $edge) {
-                foreach ([$edge->fromId, $edge->toId] as $end) {
+                foreach ([$edge->getFromId(), $edge->getToId()] as $end) {
                     if (!isset($nodes[$end])) {
                         $candidateIds[$end] = true;
                     }
@@ -417,14 +420,18 @@ class GraphStore implements GraphStoreInterface
         // paths); dangling edges to non-existent nodes are naturally excluded.
         $edges = [];
         foreach ($this->edgesTouching(array_keys($nodes)) as $edge) {
-            if (isset($nodes[$edge->fromId]) && isset($nodes[$edge->toId])) {
-                $edges[$edge->id] = $edge;
+            if (isset($nodes[$edge->getFromId()]) && isset($nodes[$edge->getToId()])) {
+                $edges[$edge->getId()] = $edge;
             }
         }
 
         return ['nodes' => array_values($nodes), 'edges' => array_values($edges)];
     }
 
+    /**
+     * @param list<NodeKind>|null $kinds
+     * @return array{nodes: list<Node>, edges: list<Edge>}
+     */
     public function graph(int $limit = 500, ?array $kinds = null): array
     {
         $limit = max(1, $limit);
@@ -437,18 +444,17 @@ class GraphStore implements GraphStoreInterface
             );
         }
 
-        $nodeRows = $nodeQuery
+        /** @var list<Node> $nodes */
+        $nodes = $nodeQuery
             ->orderBy(NodeResource::column('updated_at'), Direction::Desc)
             ->limit($limit)
-            ->fetchAllAs(NodeResource::class);
-        $edgeRows = $this->edges()->query()
+            ->fetchAllAs(Node::class, $this->mapperRegistry());
+        /** @var list<Edge> $edges */
+        $edges = $this->edges()->query()
             ->limit($limit * 8)
-            ->fetchAllAs(EdgeResource::class);
+            ->fetchAllAs(Edge::class, $this->mapperRegistry());
 
-        return [
-            'nodes' => array_map($this->toNode(...), $nodeRows),
-            'edges' => array_map($this->toEdge(...), $edgeRows),
-        ];
+        return ['nodes' => $nodes, 'edges' => $edges];
     }
 
     /**
@@ -477,82 +483,76 @@ class GraphStore implements GraphStoreInterface
         $now = new \DateTimeImmutable();
         $existing = $this->rowByRef($ref);
 
-        if ($existing instanceof NodeResource) {
-            $row = new NodeResource(
-                id: $existing->id,
-                tenant_id: $this->currentTenantId(),
-                kind: $kind->value,
-                title: $title !== '' ? $title : $existing->title,
-                title_key: $this->titleKey($title !== '' ? $title : $existing->title),
-                ext_ref: $ref,
-                properties_json: $this->encode(array_merge($this->decode($existing->properties_json), $properties)),
-                source: $source !== '' ? $source : $existing->source,
-                created_at: $existing->created_at,
-                updated_at: $now,
+        if ($existing instanceof Node) {
+            $updated = new Node(
+                id: $existing->getId(),
+                kind: $kind,
+                title: $title !== '' ? $title : $existing->getTitle(),
+                properties: array_merge($existing->getProperties(), $properties),
+                source: $source !== '' ? $source : $existing->getSource(),
+                createdAt: $existing->getCreatedAt(),
+                updatedAt: $now,
+                ref: $ref,
+                tenantId: $this->currentTenantId(),
             );
-            $this->nodes()->update($row);
+            $this->nodes()->update($updated);
 
-            return $this->toNode($row);
+            return $updated;
         }
 
-        $row = new NodeResource(
+        $node = new Node(
             id: Uuid7::generate(),
-            tenant_id: $this->currentTenantId(),
-            kind: $kind->value,
+            kind: $kind,
             title: $title,
-            title_key: $this->titleKey($title),
-            ext_ref: $ref,
-            properties_json: $this->encode($properties),
+            properties: $properties,
             source: $source,
-            created_at: $now,
-            updated_at: $now,
+            createdAt: $now,
+            updatedAt: $now,
+            ref: $ref,
+            tenantId: $this->currentTenantId(),
         );
-        $this->nodes()->insert($row);
+        $this->nodes()->insert($node);
 
-        return $this->toNode($row);
+        return $node;
     }
 
     /** The node mirroring this record, or null. */
     public function nodeByRef(string $ref): ?Node
     {
-        $row = $this->rowByRef(trim($ref));
-
-        return $row instanceof NodeResource ? $this->toNode($row) : null;
+        return $this->rowByRef(trim($ref));
     }
 
-    private function rowByRef(string $ref): ?NodeResource
+    private function rowByRef(string $ref): ?Node
     {
         if ($ref === '') {
             return null;
         }
 
-        $row = $this->nodes()->query()
+        $node = $this->nodes()->query()
             ->where(NodeResource::column('ext_ref'), Operator::Equals, $ref)
-            ->fetchOneAs(NodeResource::class);
+            ->fetchOneAs(Node::class, $this->mapperRegistry());
 
-        return $row instanceof NodeResource ? $row : null;
+        return $node instanceof Node ? $node : null;
     }
 
     public function removeNode(string $id): void
     {
         foreach (array_merge($this->edgesFrom($id), $this->edgesTo($id)) as $edge) {
-            $this->removeEdge($edge->id);
+            $this->removeEdge($edge->getId());
         }
-        $row = $this->nodes()->query()
-            ->where(NodeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(NodeResource::class);
-        if ($row instanceof NodeResource) {
-            $this->nodes()->delete($row);
+        $node = $this->nodeById($id);
+        if ($node instanceof Node) {
+            $this->nodes()->delete($node);
         }
     }
 
     public function removeEdge(string $id): void
     {
-        $row = $this->edges()->query()
+        $edge = $this->edges()->query()
             ->where(EdgeResource::column('id'), Operator::Equals, $id)
-            ->fetchOneAs(EdgeResource::class);
-        if ($row instanceof EdgeResource) {
-            $this->edges()->delete($row);
+            ->fetchOneAs(Edge::class, $this->mapperRegistry());
+        if ($edge instanceof Edge) {
+            $this->edges()->delete($edge);
         }
     }
 
@@ -577,13 +577,14 @@ class GraphStore implements GraphStoreInterface
         if ($ids === []) {
             return [];
         }
-        $rows = $this->nodes()->query()
+        /** @var list<Node> $nodes */
+        $nodes = $this->nodes()->query()
             ->whereIn(NodeResource::column('id'), $ids)
-            ->fetchAllAs(NodeResource::class);
+            ->fetchAllAs(Node::class, $this->mapperRegistry());
 
         $map = [];
-        foreach ($rows as $row) {
-            $map[$row->id] = $this->toNode($row);
+        foreach ($nodes as $node) {
+            $map[$node->getId()] = $node;
         }
 
         return $map;
@@ -604,39 +605,43 @@ class GraphStore implements GraphStoreInterface
         if ($ids === []) {
             return [];
         }
+        /** @var list<Edge> $from */
         $from = $this->edges()->query()
             ->whereIn(EdgeResource::column('from_id'), $ids)
-            ->fetchAllAs(EdgeResource::class);
+            ->fetchAllAs(Edge::class, $this->mapperRegistry());
+        /** @var list<Edge> $to */
         $to = $this->edges()->query()
             ->whereIn(EdgeResource::column('to_id'), $ids)
-            ->fetchAllAs(EdgeResource::class);
+            ->fetchAllAs(Edge::class, $this->mapperRegistry());
 
         $byId = [];
-        foreach (array_merge($from, $to) as $row) {
-            $byId[$row->id] = $row;
+        foreach (array_merge($from, $to) as $edge) {
+            $byId[$edge->getId()] = $edge;
         }
 
-        return array_map($this->toEdge(...), array_values($byId));
+        return array_values($byId);
     }
 
     /** @return list<Edge> */
     private function edgesFrom(string $nodeId): array
     {
-        $rows = $this->edges()->query()
+        /** @var list<Edge> $edges */
+        $edges = $this->edges()->query()
             ->where(EdgeResource::column('from_id'), Operator::Equals, $nodeId)
-            ->fetchAllAs(EdgeResource::class);
+            ->fetchAllAs(Edge::class, $this->mapperRegistry());
 
-        return array_map($this->toEdge(...), $rows);
+        return $edges;
     }
 
     /** @return list<Edge> */
     private function edgesTo(string $nodeId): array
     {
-        $rows = $this->edges()->query()
+        /** @var list<Edge> $edges */
+        $edges = $this->edges()->query()
             ->where(EdgeResource::column('to_id'), Operator::Equals, $nodeId)
-            ->fetchAllAs(EdgeResource::class);
+            ->fetchAllAs(Edge::class, $this->mapperRegistry());
 
-        return array_map($this->toEdge(...), $rows);
+        return $edges;
     }
 
     private function titleKey(string $title): string
@@ -644,56 +649,14 @@ class GraphStore implements GraphStoreInterface
         return TitleKey::exact($title);
     }
 
-    /** @param array<string, mixed> $properties */
-    private function encode(array $properties): string
-    {
-        return (string) json_encode($properties, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    }
-
-    /** @return array<string, mixed> */
-    private function decode(string $json): array
-    {
-        $decoded = json_decode($json, true);
-
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    private function toNode(NodeResource $row): Node
-    {
-        return new Node(
-            id: $row->id,
-            kind: NodeKind::from($row->kind),
-            title: $row->title,
-            properties: $this->decode($row->properties_json),
-            source: $row->source,
-            createdAt: $row->created_at->format('c'),
-            updatedAt: $row->updated_at->format('c'),
-            ref: $row->ext_ref,
-        );
-    }
-
-    private function toEdge(EdgeResource $row): Edge
-    {
-        return new Edge(
-            id: $row->id,
-            fromId: $row->from_id,
-            toId: $row->to_id,
-            relation: $row->relation,
-            weight: $row->weight,
-            source: $row->source,
-            createdAt: $row->created_at->format('c'),
-            updatedAt: $row->updated_at->format('c'),
-        );
-    }
-
     private function nodes(): DomainRepository
     {
-        return $this->domainRepository(NodeResource::class)->forTenant($this->currentTenantId());
+        return $this->domainRepository(NodeResource::class, Node::class)->forTenant($this->currentTenantId());
     }
 
     private function edges(): DomainRepository
     {
-        return $this->domainRepository(EdgeResource::class)->forTenant($this->currentTenantId());
+        return $this->domainRepository(EdgeResource::class, Edge::class)->forTenant($this->currentTenantId());
     }
 
     /**
@@ -702,8 +665,20 @@ class GraphStore implements GraphStoreInterface
      */
     private function currentTenantId(): string
     {
-        $context = isset($this->tenantContextStore) ? $this->tenantContextStore->tryGet() : null;
+        return TenantContextAccess::tenantIdOrDefault($this->tenantContextStore()->tryGet());
+    }
 
-        return TenantContextAccess::tenantIdOrDefault($context);
+    /**
+     * The ambient tenant store, injected or built.
+     *
+     * The store keeps the context in a coroutine-local, so an instance built
+     * here reads exactly what an injected one would. Returning null when the
+     * property is unset — which is what this did — silently answered 'default'
+     * for every caller that constructs the store bare, and under a tenant
+     * fan-out that is one tenant's graph handed to the next.
+     */
+    private function tenantContextStore(): TenantContextStoreInterface
+    {
+        return $this->tenantContextStore ??= new DefaultTenantContextStore();
     }
 }
