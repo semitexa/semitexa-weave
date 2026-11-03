@@ -15,8 +15,10 @@ use Semitexa\Orm\Metadata\HasRelationReferences;
 
 /**
  * ORM resource for a Weave node. `title_key` is the normalised title used for
- * idempotent upsert (unique per kind); `ext_ref` is the identity of a node that
- * MIRRORS something outside the graph (a page row, a media asset), where the
+ * idempotent upsert (unique per kind); `token_key` is the content-token set
+ * different phrasings share, the near-duplicate lookup (indexed, not unique;
+ * NULL on a row written before it existed, until the backfill patch);
+ * `ext_ref` is the identity of a node that MIRRORS something outside the graph (a page row, a media asset), where the
  * title is data rather than identity and renaming must not mint a second node;
  * `properties_json` holds the open per-kind property bag (the store
  * json-encodes/decodes it). `final readonly`
@@ -26,6 +28,7 @@ use Semitexa\Orm\Metadata\HasRelationReferences;
 #[FromTable(name: 'weave_node')]
 #[Index(columns: ['tenant_id', 'kind', 'title_key'], unique: true, name: 'uniq_weave_node_kind_title')]
 #[Index(columns: ['kind'], name: 'idx_weave_node_kind')]
+#[Index(columns: ['tenant_id', 'kind', 'token_key'], name: 'idx_weave_node_kind_token')]
 #[Index(columns: ['tenant_id', 'ext_ref'], unique: true, name: 'uniq_weave_node_ext_ref')]
 #[TenantScoped(strategy: 'same_storage', column: 'tenant_id')]
 final readonly class NodeResource
@@ -66,6 +69,9 @@ final readonly class NodeResource
 
         #[Column(type: MySqlType::Datetime)]
         public \DateTimeImmutable $updated_at,
+
+        #[Column(type: MySqlType::Varchar, length: 255, nullable: true)]
+        public ?string $token_key = null,
     ) {
     }
 }

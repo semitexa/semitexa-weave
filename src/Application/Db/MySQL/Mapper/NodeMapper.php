@@ -15,9 +15,9 @@ use Semitexa\Weave\Domain\Model\Node;
  *
  * Three things the row carries that the node does not carry the same way: the
  * kind is a string column and a {@see NodeKind} in the graph, the properties
- * are a JSON column and a map in the graph, and `title_key` exists only in the
- * row — it is derived from the title here, so a rename can never leave the
- * dedup key pointing at the old one.
+ * are a JSON column and a map in the graph, and `title_key` and `token_key`
+ * exist only in the row — they are derived from the title here, so a rename
+ * can never leave a dedup key pointing at the old one.
  */
 #[AsMapper(resourceModel: NodeResource::class, domainModel: Node::class)]
 final class NodeMapper implements ResourceModelMapperInterface
@@ -62,6 +62,7 @@ final class NodeMapper implements ResourceModelMapperInterface
             source: $domainModel->getSource(),
             created_at: $domainModel->getCreatedAt() ?? $now,
             updated_at: $domainModel->getUpdatedAt() ?? $now,
+            token_key: $domainModel->tokenKey(),
         );
     }
 

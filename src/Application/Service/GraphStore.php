@@ -70,11 +70,9 @@ class GraphStore implements GraphStoreInterface
             return $this->mergeIntoNode($existing, $title !== '' ? $title : $existing->getTitle(), $properties, $source, $now);
         }
 
-        // Near-duplicate guard: different phrasings of the same thing reduce to
-        // one sorted content-token set ("Semitexa documentation" == "documentation
-        // for Semitexa"). Converge onto the existing node — its (earlier) title
-        // stays canonical, new properties merge in. Bounded same-kind scan; the
-        // graph is a personal world, not a warehouse.
+        // Near-duplicate guard: phrasings with one sorted content-token set ("Semitexa
+        // documentation" == "documentation for Semitexa") converge onto the existing
+        // node; its (earlier) title stays canonical, new properties merge in.
         $nearDup = $this->findNearDuplicateNode($kind, $title);
         if ($nearDup instanceof Node) {
             return $this->mergeIntoNode($nearDup, $nearDup->getTitle(), $properties, $source, $now);
@@ -124,17 +122,19 @@ class GraphStore implements GraphStoreInterface
         return $node instanceof Node ? $node : null;
     }
 
-    /** Bounded same-kind scan converging different phrasings onto one node via the content-token set. */
+    /**
+     * Same content-token set, through idx_weave_node_kind_token (was: scan 500 nodes, ~10 ms a write,
+     * blind past them). Rows from before token_key are NULL until BackfillWeaveTokenKey; compared in PHP.
+     */
     protected function findNearDuplicateNode(NodeKind $kind, string $title): ?Node
     {
         $tokenKey = TitleKey::tokenSet($title);
-        /** @var list<Node> $sameKind */
-        $sameKind = $this->nodes()->query()
-            ->where(NodeResource::column('kind'), Operator::Equals, $kind->value)
-            ->limit(500)
-            ->fetchAllAs(Node::class, $this->mapperRegistry());
-        foreach ($sameKind as $candidate) {
-            if (TitleKey::tokenSet($candidate->getTitle()) === $tokenKey) {
+        $sameKind = fn () => $this->nodes()->query()->where(NodeResource::column('kind'), Operator::Equals, $kind->value);
+        $node = $sameKind()->where(NodeResource::column('token_key'), Operator::Equals, $tokenKey)->fetchOneAs(Node::class, $this->mapperRegistry());
+        /** @var list<Node> $unkeyed */
+        $unkeyed = $node instanceof Node ? [$node] : $sameKind()->whereNull(NodeResource::column('token_key'))->limit(500)->fetchAllAs(Node::class, $this->mapperRegistry());
+        foreach ($unkeyed as $candidate) {
+            if ($candidate->tokenKey() === $tokenKey) {
                 return $candidate;
             }
         }

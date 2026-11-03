@@ -88,6 +88,12 @@ final readonly class Node
         return TitleKey::exact($this->title);
     }
 
+    /** The near-duplicate key: the content words of the title, sorted. */
+    public function tokenKey(): string
+    {
+        return TitleKey::tokenSet($this->title);
+    }
+
     /** @return array<string, mixed> */
     public function toArray(): array
     {
