@@ -123,23 +123,18 @@ class GraphStore implements GraphStoreInterface
     }
 
     /**
-     * Same content-token set, through idx_weave_node_kind_token (was: scan 500 nodes, ~10 ms a write,
-     * blind past them). Rows from before token_key are NULL until BackfillWeaveTokenKey; compared in PHP.
+     * Same content-token set via idx_weave_node_kind_token (was: scan 500 nodes, ~10 ms, blind past them), compared
+     * in PHP (a _ci collation also returns accent variants). Pre-token_key rows (NULL) next; ref mirrors never.
      */
     protected function findNearDuplicateNode(NodeKind $kind, string $title): ?Node
     {
         $tokenKey = TitleKey::tokenSet($title);
-        $sameKind = fn () => $this->nodes()->query()->where(NodeResource::column('kind'), Operator::Equals, $kind->value);
-        $node = $sameKind()->where(NodeResource::column('token_key'), Operator::Equals, $tokenKey)->fetchOneAs(Node::class, $this->mapperRegistry());
-        /** @var list<Node> $unkeyed */
-        $unkeyed = $node instanceof Node ? [$node] : $sameKind()->whereNull(NodeResource::column('token_key'))->limit(500)->fetchAllAs(Node::class, $this->mapperRegistry());
-        foreach ($unkeyed as $candidate) {
-            if ($candidate->tokenKey() === $tokenKey) {
-                return $candidate;
-            }
-        }
+        $sameKind = fn () => $this->nodes()->query()->where(NodeResource::column('kind'), Operator::Equals, $kind->value)->whereNull(NodeResource::column('ext_ref'));
+        /** @param list<Node> $candidates */
+        $match = static fn (array $candidates): ?Node => array_values(array_filter($candidates, static fn (Node $c): bool => $c->tokenKey() === $tokenKey))[0] ?? null;
 
-        return null;
+        return $match($sameKind()->where(NodeResource::column('token_key'), Operator::Equals, $tokenKey)->fetchAllAs(Node::class, $this->mapperRegistry()))
+            ?? $match($sameKind()->whereNull(NodeResource::column('token_key'))->limit(500)->fetchAllAs(Node::class, $this->mapperRegistry()));
     }
 
     /**

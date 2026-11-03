@@ -41,7 +41,8 @@ final class BackfillWeaveTokenKey implements DataPatchInterface
             foreach ($rows as $row) {
                 $after = (string) $row['id'];
                 $ctx->execute(
-                    'UPDATE `weave_node` SET `token_key` = :token_key WHERE `id` = :id',
+                    // Still NULL: a rename since the read has written its own key.
+                    'UPDATE `weave_node` SET `token_key` = :token_key WHERE `id` = :id AND `token_key` IS NULL',
                     ['token_key' => TitleKey::tokenSet((string) $row['title']), 'id' => $after],
                 );
             }

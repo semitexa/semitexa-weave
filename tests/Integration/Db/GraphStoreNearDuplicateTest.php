@@ -81,7 +81,7 @@ final class GraphStoreNearDuplicateTest extends TestCase
         self::assertSame(1, $this->nodeCount());
         self::assertCount(2, $reads, implode("\n", $reads));
         self::assertStringContainsString('`title_key` =', $reads[0]);
-        self::assertMatchesRegularExpression('/`token_key` = :\w+ LIMIT 1$/', $reads[1], 'one row by key, not a scan of the kind');
+        self::assertMatchesRegularExpression('/`token_key` = :\w+$/', $reads[1], 'the rows with that key, not a scan of the kind');
     }
 
     #[Test]
@@ -94,6 +94,35 @@ final class GraphStoreNearDuplicateTest extends TestCase
         $this->store->upsertNode(NodeKind::Topic, 'documentation for Semitexa');
 
         self::assertSame(1, $this->nodeCount());
+    }
+
+    #[Test]
+    public function a_title_never_converges_onto_a_node_that_mirrors_a_record(): void
+    {
+        $mirror = $this->store->upsertNodeByRef(NodeKind::Topic, 'regmus:page:12', 'Semitexa documentation');
+
+        $node = $this->store->upsertNode(NodeKind::Topic, 'documentation for Semitexa', ['seen' => true]);
+
+        self::assertNotSame($mirror->getId(), $node->getId());
+        self::assertSame(2, $this->nodeCount());
+    }
+
+    #[Test]
+    public function a_keyed_row_that_only_the_collation_calls_equal_does_not_hide_the_real_match(): void
+    {
+        // MySQL's _ci collation answers `cafe house` for `café house`; SQLite
+        // compares bytes, so the stand-in is a row whose stored key disagrees
+        // with its title, beside the real match written before the column.
+        $this->store->upsertNode(NodeKind::Topic, 'Unrelated title');
+        $this->store->upsertNode(NodeKind::Topic, 'Semitexa documentation');
+        $db = $this->orm->getAdapter();
+        $db->execute("UPDATE weave_node SET token_key = 'documentation semitexa' WHERE title = 'Unrelated title'");
+        $db->execute("UPDATE weave_node SET token_key = NULL WHERE title = 'Semitexa documentation'");
+
+        $node = $this->store->upsertNode(NodeKind::Topic, 'documentation for Semitexa');
+
+        self::assertSame('Semitexa documentation', $node->getTitle());
+        self::assertSame(2, $this->nodeCount());
     }
 
     private function nodeCount(): int
