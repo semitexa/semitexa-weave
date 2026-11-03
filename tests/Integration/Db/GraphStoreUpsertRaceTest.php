@@ -44,6 +44,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
                 title_key TEXT NOT NULL,
+                token_key TEXT,
                 ext_ref TEXT,
                 properties_json TEXT NOT NULL,
                 source TEXT NOT NULL,
