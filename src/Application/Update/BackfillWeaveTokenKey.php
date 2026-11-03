@@ -12,8 +12,10 @@ use Semitexa\Weave\Domain\Model\TitleKey;
 
 /**
  * Fill weave_node.token_key for the nodes written before the column existed.
- * The near-duplicate lookup reads it through an index; a NULL row is still
- * compared the old way, so until this runs nothing is lost, only slower.
+ * The near-duplicate lookup reads it through an index. Until this runs, NULL
+ * rows are compared the old way, within a window of 500 unkeyed rows of the
+ * kind: a rephrased title whose node lies outside that window is not merged
+ * and becomes a second node, as before the column existed.
  * The key is TitleKey::tokenSet(), computed in PHP, so the rows are read and
  * written back in batches. Idempotent: only NULL rows.
  */

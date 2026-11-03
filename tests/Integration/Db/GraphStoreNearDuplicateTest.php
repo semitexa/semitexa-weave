@@ -125,6 +125,21 @@ final class GraphStoreNearDuplicateTest extends TestCase
         self::assertSame(2, $this->nodeCount());
     }
 
+    #[Test]
+    public function a_node_written_before_the_token_key_is_found_as_the_500th_unkeyed_row(): void
+    {
+        for ($i = 1; $i < 500; $i++) {
+            $this->store->upsertNode(NodeKind::Topic, "Release notes {$i} archive");
+        }
+        $this->store->upsertNode(NodeKind::Topic, 'Semitexa documentation');
+        $this->orm->getAdapter()->execute('UPDATE weave_node SET token_key = NULL');
+
+        $node = $this->store->upsertNode(NodeKind::Topic, 'documentation for Semitexa');
+
+        self::assertSame('Semitexa documentation', $node->getTitle());
+        self::assertSame(500, $this->nodeCount());
+    }
+
     private function nodeCount(): int
     {
         return (int) $this->orm->getAdapter()->execute('SELECT COUNT(*) AS n FROM weave_node')->rows[0]['n'];
