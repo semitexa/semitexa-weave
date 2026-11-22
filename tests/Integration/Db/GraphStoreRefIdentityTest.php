@@ -42,7 +42,7 @@ final class GraphStoreRefIdentityTest extends TestCase
                 weight INTEGER NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )',
         );
-        $db->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (from_id, to_id, relation)');
+        $db->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (tenant_id, from_id, to_id, relation)');
     }
 
     private function store(): GraphStore

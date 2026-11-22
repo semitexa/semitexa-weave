@@ -47,7 +47,7 @@ final class GraphStoreTraversalTest extends TestCase
                 weight INTEGER NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )',
         );
-        $real->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (from_id, to_id, relation)');
+        $real->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (tenant_id, from_id, to_id, relation)');
 
         // Count queries only from here on — the counter wraps the real adapter.
         $this->counter = new CountingAdapter($real);
@@ -63,7 +63,12 @@ final class GraphStoreTraversalTest extends TestCase
         $n2 = $store->upsertNode(NodeKind::Topic, 'N2')->getId();
         $store->addEdge($c, $n1, 'relates_to');
         $store->addEdge($n2, $c, 'relates_to'); // incoming edge — neighbour via to→from
-        $store->addEdge($c, 'ghost-missing', 'relates_to'); // orphan: target node absent
+        // Orphan: target node absent. Written as a row, since addEdge() refuses
+        // an end that is not a node; such rows are what a removed node left.
+        $this->counter->execute(
+            "INSERT INTO weave_edge (id, tenant_id, from_id, to_id, relation, weight, source, created_at, updated_at)
+             VALUES ('orphan-edge', 'default', '" . $c . "', 'ghost-missing', 'relates_to', 100, '', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        );
 
         $this->counter->reset();
         $hood = $store->neighborhood($c);

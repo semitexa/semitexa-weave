@@ -38,6 +38,9 @@ interface GraphStoreInterface
     /**
      * Create or fetch an edge, deduped by (from, to, relation). A higher weight
      * on a repeat wins (an asserted edge upgrades an inferred one).
+     *
+     * @throws \Semitexa\Weave\Domain\Exception\UnknownNodeException when either end is not a node of the current tenant
+     * @throws \Semitexa\Weave\Domain\Exception\EdgeNotStoredException when the storage holds the triple outside the current tenant (a schema not yet synced)
      */
     public function addEdge(string $fromId, string $toId, string $relation, int $weight = 100, string $source = ''): Edge;
 

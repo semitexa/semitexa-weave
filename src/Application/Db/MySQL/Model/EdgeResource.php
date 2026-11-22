@@ -14,12 +14,18 @@ use Semitexa\Orm\Metadata\HasColumnReferences;
 use Semitexa\Orm\Metadata\HasRelationReferences;
 
 /**
- * ORM resource for a directed, typed Weave edge. Deduped by
- * (from_id, to_id, relation) via the unique index; from_id/to_id are indexed
- * for neighbourhood queries. `weight` is a 0–100 confidence.
+ * ORM resource for a directed, typed Weave edge. Deduped per tenant by
+ * (tenant_id, from_id, to_id, relation) via the unique index; from_id/to_id are
+ * indexed for neighbourhood queries. `weight` is a 0–100 confidence.
+ *
+ * tenant_id leads the unique index: without it one tenant's triple blocked the
+ * same triple in every other tenant, which told a caller that the edge existed
+ * and let it stop another tenant's write. An install created before that moves
+ * over with `orm:sync --allow-destructive` (the index is dropped and re-added
+ * under the same name; no row can conflict, the wider key only relaxes it).
  */
 #[FromTable(name: 'weave_edge')]
-#[Index(columns: ['from_id', 'to_id', 'relation'], unique: true, name: 'uniq_weave_edge_triple')]
+#[Index(columns: ['tenant_id', 'from_id', 'to_id', 'relation'], unique: true, name: 'uniq_weave_edge_triple')]
 #[Index(columns: ['from_id'], name: 'idx_weave_edge_from')]
 #[Index(columns: ['to_id'], name: 'idx_weave_edge_to')]
 #[TenantScoped(strategy: 'same_storage', column: 'tenant_id')]

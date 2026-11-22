@@ -67,7 +67,7 @@ final class GraphStoreUpsertRaceTest extends TestCase
                 updated_at TEXT NOT NULL
             )',
         );
-        $db->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (from_id, to_id, relation)');
+        $db->execute('CREATE UNIQUE INDEX uniq_weave_edge_triple ON weave_edge (tenant_id, from_id, to_id, relation)');
     }
 
     #[Test]
