@@ -11,6 +11,7 @@ use Semitexa\Core\Tenant\TenantContextStoreInterface;
 use Semitexa\Core\Attribute\SatisfiesServiceContract;
 use Semitexa\Orm\Application\Service\OrmBackedStore;
 use Semitexa\Orm\Application\Service\Uuid7;
+use Semitexa\Orm\Exception\ConstraintViolationException;
 use Semitexa\Orm\OrmManager;
 use Semitexa\Orm\Query\Direction;
 use Semitexa\Orm\Query\Operator;
@@ -19,6 +20,8 @@ use Semitexa\Weave\Application\Db\MySQL\Model\EdgeResource;
 use Semitexa\Weave\Application\Db\MySQL\Model\NodeResource;
 use Semitexa\Weave\Domain\Contract\GraphStoreInterface;
 use Semitexa\Weave\Domain\Enum\NodeKind;
+use Semitexa\Weave\Domain\Exception\EdgeNotStoredException;
+use Semitexa\Weave\Domain\Exception\UnknownNodeException;
 use Semitexa\Weave\Domain\Model\Edge;
 use Semitexa\Weave\Domain\Model\Node;
 use Semitexa\Weave\Domain\Model\Relation;
@@ -182,8 +185,8 @@ class GraphStore implements GraphStoreInterface
             $newFrom = $edge->getFromId() === $dropId ? $keepId : $edge->getFromId();
             $newTo = $edge->getToId() === $dropId ? $keepId : $edge->getToId();
             $this->removeEdge($edge->getId());
-            if ($newFrom === $newTo) {
-                continue; // a self-loop carries no information
+            if ($newFrom === $newTo || !$this->nodeById($newFrom === $keepId ? $newTo : $newFrom) instanceof Node) {
+                continue; // a self-loop carries no information, nor does an edge whose other end is no node here
             }
             // addEdge() dedups on (from, to, relation), so collisions collapse.
             $this->addEdge($newFrom, $newTo, $edge->getRelation(), $edge->getWeight(), $edge->getSource());
@@ -206,6 +209,8 @@ class GraphStore implements GraphStoreInterface
 
     public function addEdge(string $fromId, string $toId, string $relation, int $weight = 100, string $source = ''): Edge
     {
+        // Both ends must be this tenant's nodes. A foreign node and a missing one get one answer: no oracle.
+        UnknownNodeException::unlessKnown($this->nodesByIds([$fromId, $toId]), $fromId, $toId);
         $relation = Relation::normalise($relation);
         $weight = max(0, min(100, $weight));
         $now = new \DateTimeImmutable();
@@ -235,14 +240,14 @@ class GraphStore implements GraphStoreInterface
             // Lost the first-write race: a concurrent addEdge of the same
             // (from_id, to_id, relation) inserted first and the unique index
             // uniq_weave_edge_triple rejected ours. Converge onto the winner
-            // and fold in our weight (max) instead of failing and losing the
-            // assertion. No row present ⇒ a real error, not the race: rethrow.
+            // and fold in our weight (max). A duplicate this tenant cannot see
+            // (index not yet synced to carry tenant_id) keeps the driver's text for the log.
             $winner = $this->existingEdgeByTriple($fromId, $toId, $relation);
             if ($winner instanceof Edge) {
                 return $this->mergeIntoEdge($winner, $fromId, $toId, $relation, $weight, $source, $now);
             }
 
-            throw $e;
+            throw $e instanceof ConstraintViolationException ? new EdgeNotStoredException($e) : $e;
         }
     }
 
